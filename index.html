@@ -417,6 +417,19 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
     </div>
   </div>
 
+  <div class="settings-card" style="margin-top:14px">
+    <div class="settings-header">FinMind API（台股即時報價）</div>
+    <div class="settings-row">
+      <div class="settings-row-label">
+        <div class="settings-row-title">FinMind Token</div>
+        <div class="settings-row-desc">finmindtrade.com 取得，無 CORS 限制</div>
+      </div>
+      <input class="settings-input" style="width:180px;text-align:left;font-size:10px"
+        id="cfg-token" type="text" autocomplete="off" autocorrect="off"
+        autocapitalize="none" spellcheck="false" placeholder="eyJ0eXAiOi...">
+    </div>
+  </div>
+
   <button type="button" class="settings-save-btn" id="btn-save-settings">儲存設定</button>
 
   <div class="settings-card" style="margin-top:24px">
@@ -430,7 +443,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
     </div>
   </div>
 
-  <div class="version-tag">台股 SEPA Tracker v1.0 · Minervini SEPA + VCP · 台幣版</div>
+  <div class="version-tag">台股 SEPA Tracker v1.1 · FinMind API · Minervini SEPA + VCP</div>
 </div>
 </div>
 
@@ -474,10 +487,11 @@ var store={
 
 // ── Config（台幣版）─────────────────────────────
 var cfg = Object.assign({
-  capital: 500000,    // NT$50萬
+  capital: 200000,
   maxLossPct: 2,
   defStopPct: 7,
   maxPosPct: 25,
+  finmindToken: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMiAxNzo0MjozNyIsInVzZXJfaWQiOiJyZW5laG8xMjAyIiwiZW1haWwiOiJyZW5lMTIzNDU0MzEwQHlhaG9vLmNvbS50dyIsImlwIjoiMTA0LjI4LjEzMy4yNCJ9.ROmruWAwMyFpos65d7jbXOdtA_DGhOEvApDVPPWl8Ko',
 }, store.get('tw_sepa_cfg') || {});
 
 function saveCfg(){ store.set('tw_sepa_cfg', cfg); }
@@ -568,38 +582,74 @@ function updateMkt(){
 }
 updateMkt(); setInterval(updateMkt,30000);
 
-// ── Yahoo Finance 報價（台股）─────────────────────
-// 台股代號在 Yahoo：2330.TW, 2330.TWO
+// ── FinMind 報價（主要）+ Yahoo 備援 ──────────────
+var FINMIND_API = 'https://api.finmindtrade.com/api/v4/data';
+
 function fetchOneTW(ticker){
-  var to=Math.floor(Date.now()/1000);
-  var from=to-10*24*3600;
-  var qs='?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
-  var sym=encodeURIComponent(ticker);
+  // 台股代號：從 "2330.TW" 或 "2330.TWO" 取出純數字
+  var sid = ticker.replace(/\.(TW|TWO)$/i, '');
+  var token = cfg.finmindToken || '';
+
+  // ① FinMind TaiwanStockPrice（有 token 時使用）
+  if(token){
+    var today = new Date();
+    var start = new Date(today.getTime() - 5*24*3600*1000)
+                  .toISOString().slice(0,10);
+    var params = 'dataset=TaiwanStockPrice&data_id='+encodeURIComponent(sid)
+               + '&start_date='+start+'&token='+encodeURIComponent(token);
+    return fetch(FINMIND_API+'?'+params, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(function(d){
+        if(d.msg !== 'success' || !d.data || !d.data.length)
+          throw new Error('no data');
+        var rows = d.data.sort(function(a,b){ return a.date>b.date?1:-1; });
+        var last = rows[rows.length-1];
+        var prev = rows.length>1 ? rows[rows.length-2] : last;
+        return {
+          price:   parseFloat(last.close),
+          prevClose: parseFloat(prev.close),
+          change1d: prev.close ? (last.close - prev.close)/prev.close*100 : 0,
+          high:    parseFloat(last.max),
+          low:     parseFloat(last.min),
+          open:    parseFloat(last.open),
+          currency:'TWD'
+        };
+      })
+      .catch(function(){ return _fetchOneTW_yahoo(ticker); }); // fallback
+  }
+
+  // ② 無 token 直接用 Yahoo
+  return _fetchOneTW_yahoo(ticker);
+}
+
+function _fetchOneTW_yahoo(ticker){
+  var to   = Math.floor(Date.now()/1000);
+  var from = to - 10*24*3600;
+  var qs   = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
+  var sym  = encodeURIComponent(ticker);
 
   function tryFetch(base){
-    return fetch(base+sym+qs,{cache:'no-store'})
-      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
+    return fetch(base+sym+qs, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
       .then(function(d){
-        var res=d&&d.chart&&d.chart.result&&d.chart.result[0];
+        var res = d&&d.chart&&d.chart.result&&d.chart.result[0];
         if(!res) throw new Error('no result');
-        var q=res.indicators&&res.indicators.quote&&res.indicators.quote[0];
-        var meta=res.meta||{};
-        var closes=q&&q.close||[];
-        var n=closes.length;
+        var q  = res.indicators&&res.indicators.quote&&res.indicators.quote[0];
+        var closes = q&&q.close||[];
+        var n = closes.length;
         if(!n) throw new Error('no data');
-        var c=closes[n-1];
-        var pc=n>1?closes[n-2]:c;
+        var c  = closes[n-1];
+        var pc = n>1 ? closes[n-2] : c;
         return {
-          price:c, prevClose:pc,
-          change1d:pc?((c-pc)/pc*100):0,
-          high:(q.high||[])[n-1]||c,
-          low:(q.low||[])[n-1]||c,
-          open:(q.open||[])[n-1]||c,
-          currency: meta.currency||'TWD'
+          price:   c,  prevClose: pc,
+          change1d: pc ? (c-pc)/pc*100 : 0,
+          high:    (q.high||[])[n-1]||c,
+          low:     (q.low||[])[n-1]||c,
+          open:    (q.open||[])[n-1]||c,
+          currency:'TWD'
         };
       });
   }
-
   return tryFetch('https://query2.finance.yahoo.com/v8/finance/chart/')
     .catch(function(){ return tryFetch('https://query1.finance.yahoo.com/v8/finance/chart/'); });
 }
@@ -675,24 +725,56 @@ function parseYahooOHLCV(raw){
 }
 
 function fetchOHLCV(ticker){
-  var to=Math.floor(Date.now()/1000);
-  var from=to-365*24*3600;  // 1年資料
-  var sym=encodeURIComponent(ticker);
-  var qs='?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
+  var sid   = ticker.replace(/\.(TW|TWO)$/i, '');
+  var token = cfg.finmindToken || '';
+  var start = new Date(Date.now() - 400*24*3600*1000).toISOString().slice(0,10);
+
+  // ① FinMind TaiwanStockPriceAdj（還原股價，VCP 更準確）
+  if(token){
+    var params = 'dataset=TaiwanStockPriceAdj&data_id='+encodeURIComponent(sid)
+               + '&start_date='+start+'&token='+encodeURIComponent(token);
+    return fetch(FINMIND_API+'?'+params, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(function(d){
+        if(d.msg !== 'success' || !d.data || d.data.length < 10)
+          throw new Error('insufficient');
+        var rows = d.data.sort(function(a,b){ return a.date>b.date?1:-1; });
+        return rows.map(function(r){
+          return {
+            t: new Date(r.date).getTime()/1000,
+            o: parseFloat(r.open),
+            h: parseFloat(r.max),
+            l: parseFloat(r.min),
+            c: parseFloat(r.close),
+            v: parseFloat(r.Trading_Volume||r.volume||0)
+          };
+        });
+      })
+      .catch(function(){ return _fetchOHLCV_yahoo(ticker); }); // fallback
+  }
+
+  return _fetchOHLCV_yahoo(ticker);
+}
+
+function _fetchOHLCV_yahoo(ticker){
+  var to  = Math.floor(Date.now()/1000);
+  var from= to - 365*24*3600;
+  var sym = encodeURIComponent(ticker);
+  var qs  = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
 
   function attempt(base){
-    return fetch(base+sym+qs,{cache:'no-store'})
-      .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
-      .then(function(d){return parseYahooOHLCV(d);});
+    return fetch(base+sym+qs, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(function(d){ return parseYahooOHLCV(d); });
   }
 
   return attempt('https://query2.finance.yahoo.com/v8/finance/chart/')
     .catch(function(){ return attempt('https://query1.finance.yahoo.com/v8/finance/chart/'); })
     .catch(function(){
-      var u='https://query1.finance.yahoo.com/v8/finance/chart/'+sym+qs;
-      return fetch('https://api.allorigins.win/get?url='+encodeURIComponent(u),{cache:'no-store'})
-        .then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();})
-        .then(function(d){var raw=d.contents?JSON.parse(d.contents):d;return parseYahooOHLCV(raw);});
+      var u = 'https://query1.finance.yahoo.com/v8/finance/chart/'+sym+qs;
+      return fetch('https://api.allorigins.win/get?url='+encodeURIComponent(u), {cache:'no-store'})
+        .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+        .then(function(d){ var raw=d.contents?JSON.parse(d.contents):d; return parseYahooOHLCV(raw); });
     });
 }
 
@@ -1226,6 +1308,7 @@ function loadSettingsForm(){
   document.getElementById('cfg-maxloss').value=cfg.maxLossPct;
   document.getElementById('cfg-defstop').value=cfg.defStopPct;
   document.getElementById('cfg-maxpos').value=cfg.maxPosPct;
+  document.getElementById('cfg-token').value=cfg.finmindToken||'';
 }
 document.getElementById('btn-save-settings').addEventListener('click', function(){
   var cap=pnv(document.getElementById('cfg-capital').value);
@@ -1234,9 +1317,11 @@ document.getElementById('btn-save-settings').addEventListener('click', function(
   cfg.maxLossPct= pnv(document.getElementById('cfg-maxloss').value)||2;
   cfg.defStopPct= pnv(document.getElementById('cfg-defstop').value)||7;
   cfg.maxPosPct = pnv(document.getElementById('cfg-maxpos').value)||25;
+  var tk=(document.getElementById('cfg-token').value||'').trim();
+  if(tk) cfg.finmindToken=tk;
   saveCfg(); renderStats();
   if(stopMode==='pct') document.getElementById('f-stop').placeholder=cfg.defStopPct+'%';
-  toast('✅ 設定已儲存！本金 NT$'+Number(cfg.capital).toLocaleString());
+  toast('✅ 設定已儲存！'+(tk?'FinMind Token 已更新 · ':'')+'本金 NT$'+Number(cfg.capital).toLocaleString());
 });
 document.getElementById('btn-clear-all').addEventListener('click', function(){
   if(!confirm('確定要清除所有台股持倉嗎？此操作無法復原。')) return;
