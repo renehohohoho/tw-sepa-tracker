@@ -110,7 +110,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
 .pos-card.sig-add{border-color:#4d9fff55}
 .pos-main{display:flex;align-items:flex-start;gap:10px;padding:14px 14px 0;cursor:pointer;user-select:none}
 .pos-ticker{font-size:17px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
-.pos-name{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
+.pos-name{font-size:10px;color:var(--muted);font-family:var(--sans);margin-top:1px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
 .pos-lots{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
 .pos-middle{flex:1;min-width:0}
 .pos-pnl-row{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
@@ -500,6 +500,7 @@ function saveCfg(){ store.set('tw_sepa_cfg', cfg); }
 var lots = store.get('tw_sepa_positions') || [];
 var prices = {};
 var vcpData = {};
+var stockNames = store.get('tw_sepa_names') || {};
 var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
@@ -640,6 +641,10 @@ function _fetchOneTW_yahoo(ticker){
         if(!n) throw new Error('no data');
         var c  = closes[n-1];
         var pc = n>1 ? closes[n-2] : c;
+        // 儲存中文名稱（從 meta 取得）
+        var meta = res.meta||{};
+        var rawName = meta.longName || meta.shortName || '';
+        if(rawName){ stockNames[ticker]=rawName; store.set('tw_sepa_names',stockNames); }
         return {
           price:   c,  prevClose: pc,
           change1d: pc ? (c-pc)/pc*100 : 0,
@@ -1104,6 +1109,7 @@ function renderCard(card, g){
   card.innerHTML=(
     '<div class="pos-main" data-toggle="'+g.ticker+'">'
     +'<div><div class="pos-ticker">'+disp+'</div>'
+    +(stockNames[g.ticker]?'<div class="pos-name">'+stockNames[g.ticker]+'</div>':'')
     +'<div class="pos-lots">'+(nlots>1?nlots+' 筆 · ':'')+g.totalLots+'張（'+g.totalShares.toLocaleString()+'股）</div>'
     +'<div class="sig-badge '+bkey+'">'+bicon+' '+blabel+'</div></div>'
     +'<div class="pos-middle">'
