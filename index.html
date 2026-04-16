@@ -2,11 +2,14 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="台股持倉">
-<title>台股 SEPA 持倉管理</title>
+<title>台股 SEPA 持倉管理 v4.1</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -226,15 +229,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
 .tp-next{font-family:var(--mono);font-size:11px;color:var(--amber);padding:6px 0;border-top:1px solid var(--bdr);margin-top:4px}
 .tp-stopmove{font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 0;line-height:1.8}
 .tp-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-.tp-act-btn{flex:1;min-width:80px;display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:8px 6px;border-radius:9px;border:1px solid var(--bdr);background:var(--card);
-  cursor:pointer;font-family:var(--mono);transition:border-color .15s,background .15s}
-.tp-act-btn:active{transform:scale(.97)}
-.t1-btn{border-color:#ffb02044;color:var(--amber)}
-.t1-btn:active,.t2-btn:active,.t3-btn:active{filter:brightness(1.3)}
-.t2-btn{border-color:#00b86544;color:var(--grn2)}
-.t3-btn{border-color:#00f08a44;color:var(--green)}
-.done-btn{border-color:#1e2035;color:var(--muted);background:var(--bg2);opacity:.6;cursor:default}
+.tp-act-btn{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:10px 8px;border-radius:10px;border:1px solid;background:transparent;
+  cursor:pointer;font-family:var(--mono);transition:opacity .15s,transform .1s;
+  user-select:none;-webkit-user-select:none}
+.tp-act-btn:active{transform:scale(.96);opacity:.7}
+.t1-btn{border-color:rgba(255,176,32,.35);color:var(--amber);background:rgba(255,176,32,.06)}
+.t2-btn{border-color:rgba(0,184,101,.35);color:var(--grn2);background:rgba(0,184,101,.06)}
+.t3-btn{border-color:rgba(0,240,138,.35);color:var(--green);background:rgba(0,240,138,.06)}
+.done-btn{border-color:var(--bdr);color:var(--muted);background:transparent;opacity:.4;cursor:default}
+.next-btn{box-shadow:0 0 0 1px currentColor}
 .tp-act-badge{font-size:14px}
 .tp-act-lbl{font-size:9px;color:var(--muted);text-align:center;line-height:1.5}
 .tp-progress{display:flex;align-items:center;gap:5px;margin-top:6px;font-family:var(--mono);font-size:10px}
@@ -299,6 +303,16 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
   padding:12px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px}
 .version-tag{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;padding-top:8px}
 </style>
+<script>
+(function(){
+  var VER='4.1';
+  var stored=sessionStorage.getItem('tw_sepa_ver');
+  if(stored!==VER){
+    sessionStorage.setItem('tw_sepa_ver',VER);
+    if(stored!==null){ window.location.reload(true); }
+  }
+})();
+</script>
 </head>
 <body>
 
@@ -307,10 +321,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
   <div class="hdr-top">
     <div>
       <div class="hdr-title">🇹🇼 台股 SEPA 持倉</div>
-      <div class="hdr-sub" id="hdr-sub">Minervini 策略 · 台幣計算</div>
+      <div class="hdr-sub" id="hdr-sub">Minervini 策略 · 台幣計算 · v4.1</div>
     </div>
     <div class="hdr-btns">
       <button type="button" class="btn-icon" id="btn-export">📋</button>
+      <button type="button" class="btn-icon" id="btn-hardreload" style="font-size:13px">🔄 重載</button>
       <button type="button" class="btn-icon" id="btn-refresh"><span id="ri">↻</span> <span id="rl">更新</span></button>
     </div>
   </div>
@@ -457,6 +472,56 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);
   </button>
 </nav>
 
+<!-- TP EXECUTE MODAL -->
+<div class="modal-overlay" id="tp-modal">
+  <div class="modal" style="gap:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="modal-title" id="tp-modal-title">執行止盈</div>
+      <div id="tp-modal-phase-badge" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:20px;background:rgba(255,176,32,.15);color:var(--amber)"></div>
+    </div>
+    <div id="tp-modal-info" style="background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.9"></div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出張數</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="tp-inp-lots" inputmode="numeric" min="1"
+            style="flex:1;background:var(--card);border:1px solid var(--bdr2);border-radius:10px;
+            padding:12px 14px;font-family:var(--mono);font-size:16px;color:var(--text);
+            outline:none;-webkit-appearance:none">
+          <button type="button" id="tp-preset-lots"
+            style="background:rgba(255,176,32,.12);border:1px solid rgba(255,176,32,.3);color:var(--amber);
+            border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap">
+            預設
+          </button>
+        </div>
+      </div>
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出價格 (NT$)</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="number" id="tp-inp-price" inputmode="decimal" step="0.1" min="0.1"
+            style="flex:1;background:var(--card);border:1px solid var(--bdr2);border-radius:10px;
+            padding:12px 14px;font-family:var(--mono);font-size:16px;color:var(--text);
+            outline:none;-webkit-appearance:none">
+          <button type="button" id="tp-preset-price"
+            style="background:rgba(0,184,101,.12);border:1px solid rgba(0,184,101,.3);color:var(--grn2);
+            border-radius:10px;padding:10px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;white-space:nowrap">
+            現價
+          </button>
+        </div>
+      </div>
+    </div>
+    <div id="tp-modal-preview" style="background:rgba(0,240,138,.04);border:1px solid rgba(0,240,138,.12);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:11px;line-height:2;display:none"></div>
+    <div id="tp-modal-newstop" style="background:rgba(255,176,32,.06);border:1px solid rgba(255,176,32,.15);border-radius:8px;padding:10px 14px;font-family:var(--mono);font-size:11px;color:var(--amber);display:none"></div>
+    <div class="modal-btns">
+      <button type="button" id="tp-modal-confirm"
+        style="border:none;border-radius:10px;padding:14px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;flex:1;min-height:50px;background:var(--amber);color:#000;">
+        ✅ 確認執行
+      </button>
+      <button type="button" id="tp-modal-cancel" class="btn-mclose">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- EXPORT MODAL -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
@@ -505,6 +570,7 @@ var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
 var stopMode = 'pct';
+window.tradeLog = store.get('tw_sepa_trade_log') || [];
 
 // ── Helpers ───────────────────────────────────────
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
@@ -900,12 +966,12 @@ function buildAnalysis(g, pd){
 // ── Take Profit Plan（台幣版）────────────────────
 function buildTPPlan(g, cur){
   var entry=g.avgEntry, stop=g.avgStop, shares=g.totalShares, lots=g.totalLots;
-  var maxLoss=Math.round((entry-stop)*shares);
-  if(maxLoss<=0) return '';
+  var maxLoss=Math.abs(Math.round((entry-stop)*shares)); // stop may be above entry after T1
+  if(lots<=0) return '';
   var pp=cur?(cur-entry)/entry*100:0;
   var tiers=[
     {num:'T1',pct:.20,sh:Math.ceil(lots/3),label:'第一止盈',col:'var(--amber)',cls:'t1',action:'出 ⅓，停損移至成本+2%'},
-    {num:'T2',pct:.40,sh:Math.ceil(lots/3),label:'中段獲利',col:'var(--grn2)',cls:'t2',action:'再出 ⅓，停損移至+20%'},
+    {num:'T2',pct:.40,sh:Math.ceil(lots/3),label:'中段獲利',col:'var(--grn2)',cls:'t2',action:'再出 ½，停損移至+20%'},
     {num:'T3',pct:.60,sh:Math.floor(lots/3),label:'主力目標',col:'var(--green)',cls:'t3',action:'剩餘出場或跟進停損'},
     {num:'T4',pct:1.00,sh:lots,label:'超級績效',col:'var(--purp)',cls:'t4',action:'強勢特例，緊跟支撐'},
   ];
@@ -948,29 +1014,33 @@ function buildTPPlan(g, cur){
     +' → T3後 <strong style="color:var(--green)">NT$'+s3.toFixed(1)+'</strong>'
     +'</div>';
 
-  // Quick action buttons
+  // ── Quick action buttons ──────────────────────────
   var phase=tpPhase[g.ticker]||0;
+  var t1sh=Math.ceil(lots/3);
+  var t2sh= phase>=1 ? Math.ceil(lots/2) : Math.ceil(lots/3);
+  var t3sh= lots;
   var actions=[
-    {label:'T1 出 ⅓',sub:'出 '+Math.ceil(lots/3)+'張\n停損→成本+2%',cls:'t1-btn',phase:1},
-    {label:'T2 再出 ⅓',sub:'再出 '+Math.ceil(lots/3)+'張\n停損→+20%',cls:'t2-btn',phase:2},
-    {label:'T3 清倉',sub:'出清 '+lots+'張\n完成交易',cls:'t3-btn',phase:3},
+    {label:'T1 出 ⅓',sub:'出 '+t1sh+' 張\n停損→成本+2%',cls:'t1-btn',phase:1},
+    {label:'T2 再出 ½',sub:'再出 '+t2sh+' 張\n停損→+20%',cls:'t2-btn',phase:2},
+    {label:'T3 清倉',sub:'出清 '+t3sh+' 張\n完成交易',cls:'t3-btn',phase:3},
   ];
   html+='<div class="tp-actions">';
   actions.forEach(function(a){
     var isDone=phase>=a.phase;
     var isNext=phase===a.phase-1;
-    var btnCls='tp-act-btn '+(isDone?'done-btn':a.cls);
+    var btnCls='tp-act-btn '+(isDone?'done-btn':(isNext?a.cls+' next-btn':a.cls));
     var icon=isDone?'✅':(isNext?'👉':'○');
-    html+='<button type="button" class="'+btnCls+'" '
-      +(isDone?'':'data-tp-action="'+a.phase+'" data-ticker="'+g.ticker+'"')+'>'
+    html+='<button type="button" class="'+btnCls+'"'
+      +(isDone?'':' data-tp-action="'+a.phase+'" data-ticker="'+g.ticker+'"')
+      +' style="'+(isNext?'flex:2;':'flex:1;')+'">'
       +'<span class="tp-act-badge">'+icon+'</span>'
-      +'<span style="font-size:11px">'+a.label+'</span>'
+      +'<span style="font-size:'+(isNext?'12':'11')+'px;font-weight:'+(isNext?'700':'400')+'">'+a.label+'</span>'
       +'<span class="tp-act-lbl">'+a.sub.replace(/\n/g,'<br>')+'</span>'
       +'</button>';
   });
   html+='</div>';
   if(phase>0){
-    var phaseNames=['','T1 已出 ⅓','T2 已出 ⅔','T3 已清倉'];
+    var phaseNames=['','T1 已出 ⅓','T2 已出 ½','T3 已清倉'];
     html+='<div class="tp-progress">';
     for(var pi=1;pi<=3;pi++){
       html+='<span class="tp-progress-dot '+(phase>=pi?'tp-done':'tp-pending')+'"></span>';
@@ -1052,7 +1122,7 @@ function renderCard(card, g){
   var detailHtml='';
   if(ie){
     var lotsHtml='<div class="lots-section">'
-      +'<div class="lots-title">📦 '+nlots+' 筆交易（均價 NT$'+f2(g.avgEntry,1)+'）</div>';
+      +'<div class="lots-title">📦 '+nlots+' 筆買入明細（均價 NT$'+f2(g.avgEntry,1)+'）</div>';
     g.lots.forEach(function(lot){
       var lotPnl=cur?(cur-lot.entry)*(lot.lots||0)*1000:null;
       var lotPnlPct=cur?(cur-lot.entry)/lot.entry*100:null;
@@ -1066,6 +1136,25 @@ function renderCard(card, g){
         +'</div>';
     });
     lotsHtml+='</div>';
+
+    // Sell history for this ticker
+    var allTrades=(window.tradeLog||[]).filter(function(t){return t.ticker===g.ticker;});
+    if(allTrades.length){
+      lotsHtml+='<div class="lots-section" style="margin-top:8px">'
+        +'<div class="lots-title" style="color:var(--grn2)">💰 '+allTrades.length+' 筆已實現獲利</div>';
+      allTrades.forEach(function(t){
+        var phaseLabel=t.action==='SELL_T1'?'T1':t.action==='SELL_T2'?'T2':'T3';
+        var pnlCol=t.pnl>=0?'var(--green)':'var(--red)';
+        lotsHtml+='<div class="lot-row" style="background:rgba(0,184,101,.04);border-color:rgba(0,184,101,.15)">'
+          +'<span class="lot-date">'+t.date+'</span>'
+          +'<span class="lot-val" style="color:var(--grn2)">'+phaseLabel+' 賣 '+t.lots+' 張</span>'
+          +'<span class="lot-val">@NT$'+f2(t.price,1)+'</span>'
+          +'<span class="lot-pnl" style="color:'+pnlCol+'">'+twd(t.pnl)+'<br><span style="font-size:9px">'+ppct(t.pct)+'</span></span>'
+          +'<button type="button" class="lot-del" data-trade-id="'+t.id+'" data-ticker="'+g.ticker+'">✕</button>'
+          +'</div>';
+      });
+      lotsHtml+='</div>';
+    }
 
     if(cur&&pd){
       var a=buildAnalysis(g,pd);
@@ -1135,54 +1224,164 @@ function saveLots(){ store.set('tw_sepa_positions', lots); }
 function saveTpPhase(){ store.set('tw_sepa_tp_phase', tpPhase); }
 
 // ── TP Execute ────────────────────────────────────
-function executeTpAction(ticker, phase){
+// ── TP Execute Modal (台股版) ─────────────────────
+function openTpModal(ticker, phase){
   var group=getGroups().find(function(g){return g.ticker===ticker;});
-  if(!group) return;
-  var entry=group.avgEntry;
-  var disp=displayTicker(ticker);
-  var confirmMsg;
-  if(phase===1){
-    var lotSell=Math.ceil(group.totalLots/3);
-    var newStop=Math.round(entry*1.02*10)/10;
-    confirmMsg='T1 執行：\n出售約 ⅓（'+lotSell+' 張）\n停損移至成本+2%（NT$'+newStop.toFixed(1)+'）\n\n確認執行？';
-  } else if(phase===2){
-    var lotSell=Math.ceil(group.totalLots/3);
-    var newStop=Math.round(entry*1.20*10)/10;
-    confirmMsg='T2 執行：\n再出售約 ⅓（'+lotSell+' 張）\n停損移至+20%（NT$'+newStop.toFixed(1)+'）\n\n確認執行？';
-  } else if(phase===3){
-    confirmMsg='T3 執行：\n出清剩餘全部 '+group.totalLots+' 張\n清除所有 '+disp+' 持倉\n\n確認執行？';
-  }
-  if(!confirm(confirmMsg)) return;
+  if(!group){ toast('⚠️ 找不到持倉'); return; }
 
-  if(phase===1||phase===2){
-    var target=Math.ceil(group.totalLots/3);
-    var removed=0;
-    var sorted=group.lots.slice().sort(function(a,b){return (a.lots||0)-(b.lots||0);});
-    sorted.forEach(function(lot){
-      if(removed>=target) return;
-      var canTake=Math.min(lot.lots||0, target-removed);
-      if(canTake===(lot.lots||0)){
-        lots=lots.filter(function(l){return l.id!==lot.id;});
-      } else {
-        var idx=lots.findIndex(function(l){return l.id===lot.id;});
-        if(idx>=0) lots[idx].lots-=canTake;
-      }
-      removed+=canTake;
-    });
-    var newStop=phase===1?Math.round(entry*1.02*10)/10:Math.round(entry*1.20*10)/10;
-    lots.forEach(function(l){ if(l.ticker===ticker) l.stop=newStop; });
+  var entry=group.avgEntry;
+  var totalLots=group.totalLots;
+  var curPrice=(prices[ticker]&&prices[ticker].price)||null;
+  var defaultLots= phase===1 ? Math.ceil(totalLots/3)
+                 : phase===2 ? Math.ceil(totalLots/2)
+                 : totalLots;
+  var newStopPrice= phase===1 ? Math.round(entry*1.02*10)/10
+                  : phase===2 ? Math.round(entry*1.20*10)/10
+                  : Math.round(entry*1.40*10)/10;
+  var phaseCol= phase===1?'var(--amber)': phase===2?'var(--grn2)':'var(--green)';
+  var phaseLabel= phase===1?'T1 出 ⅓': phase===2?'T2 再出 ½':'T3 清倉';
+  var disp=displayTicker(ticker);
+
+  // Store context on modal dataset
+  var overlay=document.getElementById('tp-modal');
+  overlay.dataset.ticker=ticker;
+  overlay.dataset.phase=phase;
+  overlay.dataset.entry=entry;
+  overlay.dataset.totalLots=totalLots;
+  overlay.dataset.curPrice=curPrice||'';
+  overlay.dataset.newStop=newStopPrice;
+  overlay.dataset.defaultLots=defaultLots;
+
+  // Fill UI
+  document.getElementById('tp-modal-title').textContent= phase===3?'T3 清倉確認':'執行止盈 '+phaseLabel;
+  document.getElementById('tp-modal-phase-badge').textContent=phaseLabel;
+  document.getElementById('tp-modal-phase-badge').style.color=phaseCol;
+  document.getElementById('tp-modal-confirm').style.background=phaseCol;
+
+  document.getElementById('tp-modal-info').innerHTML=
+    '<span style="color:var(--text)">'+disp+'</span>'
+    +' &nbsp;·&nbsp; 現持 <strong style="color:var(--text)">'+totalLots+' 張</strong>'
+    +' &nbsp;·&nbsp; 均價 <strong style="color:var(--text)">NT$'+f2(entry,1)+'</strong>'
+    +(curPrice?' &nbsp;·&nbsp; 現價 <strong style="color:var(--green)">NT$'+f2(curPrice,1)+'</strong>':'');
+
+  document.getElementById('tp-modal-newstop').style.display='block';
+  document.getElementById('tp-modal-newstop').innerHTML=
+    '📌 執行後停損移至：<strong style="color:'+phaseCol+'">NT$'+f2(newStopPrice,1)+'</strong>'
+    +(phase===3?' （清除全部持倉）':'');
+
+  var lotsInp=document.getElementById('tp-inp-lots');
+  var priceInp=document.getElementById('tp-inp-price');
+  lotsInp.value=defaultLots;
+  priceInp.value=curPrice?f2(curPrice,1):f2(entry,1);
+
+  function updatePreview(){
+    var lt=parseInt(lotsInp.value)||0;
+    var pr=parseFloat(priceInp.value)||0;
+    var preview=document.getElementById('tp-modal-preview');
+    if(lt>0&&pr>0){
+      var pnl=Math.round(lt*1000*(pr-entry));
+      var pct=((pr-entry)/entry*100).toFixed(1);
+      var rem=Math.max(0,totalLots-lt);
+      preview.style.display='block';
+      preview.innerHTML=
+        '賣出 <strong style="color:var(--text)">'+lt+' 張</strong> @ <strong style="color:var(--text)">NT$'+f2(pr,1)+'</strong><br>'
+        +'實現損益：<strong style="color:'+(pnl>=0?'var(--green)':'var(--red)')+'">'+twd(pnl)+'</strong> (+'+pct+'%)<br>'
+        +'剩餘持倉：<strong style="color:var(--text)">'+rem+' 張</strong>';
+    } else {
+      preview.style.display='none';
+    }
+  }
+
+  lotsInp.oninput=updatePreview;
+  priceInp.oninput=updatePreview;
+  document.getElementById('tp-preset-lots').onclick=function(){ lotsInp.value=defaultLots; updatePreview(); };
+  document.getElementById('tp-preset-price').onclick=function(){ if(curPrice){ priceInp.value=f2(curPrice,1); updatePreview(); } };
+  updatePreview();
+
+  overlay.classList.add('show');
+}
+
+// Single confirm handler
+(function(){
+  var overlay=document.getElementById('tp-modal');
+  document.getElementById('tp-modal-confirm').addEventListener('click', function(){
+    var ticker=overlay.dataset.ticker;
+    var phase=parseInt(overlay.dataset.phase);
+    var totalLots=parseInt(overlay.dataset.totalLots);
+    var lt=parseInt(document.getElementById('tp-inp-lots').value)||0;
+    var pr=parseFloat(document.getElementById('tp-inp-price').value)||0;
+    if(!ticker||isNaN(phase)){ toast('⚠️ 資料錯誤'); return; }
+    if(lt<=0||lt>totalLots){ toast('⚠️ 張數無效（1 ~ '+totalLots+'）'); return; }
+    if(pr<=0){ toast('⚠️ 請輸入賣出價格'); return; }
+    overlay.classList.remove('show');
+    executeTpAction(ticker, phase, lt, pr);
+  });
+  document.getElementById('tp-modal-cancel').addEventListener('click', function(){
+    document.getElementById('tp-modal').classList.remove('show');
+  });
+  document.getElementById('tp-modal').addEventListener('click', function(e){
+    if(e.target===this) this.classList.remove('show');
+  });
+})();
+
+// ── Execute T1 / T2 / T3 (台股版) ────────────────
+function executeTpAction(ticker, phase, sellLots, sellPrice){
+  var group=getGroups().find(function(g){return g.ticker===ticker;});
+  if(!group){ toast('⚠️ 找不到持倉 '+ticker); return; }
+  var entry=group.avgEntry;
+
+  // Remove sellLots from lots (smallest first)
+  var target=sellLots;
+  var removed=0;
+  var sorted=group.lots.slice().sort(function(a,b){return (a.lots||0)-(b.lots||0);});
+  sorted.forEach(function(lot){
+    if(removed>=target) return;
+    var canTake=Math.min(lot.lots||0, target-removed);
+    if(canTake===(lot.lots||0)){
+      lots=lots.filter(function(l){return l.id!==lot.id;});
+    } else {
+      var idx=lots.findIndex(function(l){return l.id===lot.id;});
+      if(idx>=0) lots[idx].lots-=canTake;
+    }
+    removed+=canTake;
+  });
+
+  // Move stops + set phase
+  var newStop= phase===1 ? Math.round(entry*1.02*10)/10
+             : phase===2 ? Math.round(entry*1.20*10)/10
+             : Math.round(entry*1.40*10)/10;
+
+  var remaining=lots.filter(function(l){return l.ticker===ticker;});
+  if(remaining.length>0){
+    remaining.forEach(function(l){ l.stop=newStop; });
     tpPhase[ticker]=phase;
-  } else if(phase===3){
-    lots=lots.filter(function(l){return l.ticker!==ticker;});
+  } else {
     delete tpPhase[ticker];
     if(expanded===ticker) expanded=null;
   }
+
+  // Log the trade
+  window.tradeLog=window.tradeLog||[];
+  window.tradeLog.unshift({
+    id:uid(), ticker:ticker,
+    date:new Date().toISOString().slice(0,10),
+    action:'SELL_T'+phase,
+    lots:sellLots, price:sellPrice,
+    entry:entry,
+    pnl:Math.round(sellLots*1000*(sellPrice-entry)),
+    pct:Math.round((sellPrice-entry)/entry*10000)/100
+  });
+  store.set('tw_sepa_trade_log', window.tradeLog);
+
   saveLots(); saveTpPhase(); renderAll();
-  if(phase===3){
-    toast('✅ '+disp+' T3 完成，持倉已清除');
+
+  var pnl=Math.round(sellLots*1000*(sellPrice-entry));
+  var disp=displayTicker(ticker);
+  if(remaining.length===0){
+    toast('✅ '+disp+' 已清倉 · 實現 '+twd(pnl));
   } else {
-    var newStop=phase===1?Math.round(entry*1.02*10)/10:Math.round(entry*1.20*10)/10;
-    toast('✅ '+disp+' T'+phase+' 完成 · 停損已移至 NT$'+newStop.toFixed(1));
+    var remLots=remaining.reduce(function(s,l){return s+(l.lots||0);},0);
+    toast('✅ T'+phase+' 完成 · 賣 '+sellLots+' 張 @ NT$'+f2(sellPrice,1)+' · 停損→NT$'+f2(newStop,1)+' · 剩 '+remLots+' 張');
   }
 }
 
@@ -1269,6 +1468,18 @@ document.getElementById('pos-wrap').addEventListener('click', function(e){
     toast('🗑 已刪除 '+displayTicker(ticker)+' '+lot.date+' 的交易');
     return;
   }
+
+  // Delete sell trade log entry
+  var tradeDel=el.closest('[data-trade-id]');
+  if(tradeDel){
+    var tradeId=tradeDel.getAttribute('data-trade-id');
+    window.tradeLog=(window.tradeLog||[]).filter(function(t){return t.id!==tradeId;});
+    store.set('tw_sepa_trade_log', window.tradeLog);
+    renderAll();
+    toast('🗑 已刪除賣出記錄');
+    return;
+  }
+
   var btn=el.closest('[data-action]');
   if(btn){
     var action=btn.getAttribute('data-action'),ticker=btn.getAttribute('data-ticker');
@@ -1286,12 +1497,17 @@ document.getElementById('pos-wrap').addEventListener('click', function(e){
   if(tpBtn){
     var phase=parseInt(tpBtn.getAttribute('data-tp-action'));
     var ticker=tpBtn.getAttribute('data-ticker');
-    executeTpAction(ticker, phase);
+    openTpModal(ticker, phase);
   }
 });
 
 document.getElementById('btn-add').addEventListener('click', addLot);
 document.getElementById('btn-refresh').addEventListener('click', fullRefresh);
+document.getElementById('btn-hardreload').addEventListener('click', function(){
+  sessionStorage.removeItem('tw_sepa_ver');
+  var url=window.location.href.split('?')[0]+'?v='+Date.now();
+  window.location.replace(url);
+});
 document.getElementById('tab-price').addEventListener('click', function(){ setStopMode('price'); });
 document.getElementById('tab-pct').addEventListener('click', function(){ setStopMode('pct'); });
 document.getElementById('f-stop').addEventListener('input', updateStopHint);
