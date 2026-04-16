@@ -1,1371 +1,1704 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="台股持倉">
-<title>台股 SEPA 持倉管理</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#070810;--bg2:#0c0d1a;--card:#0f1020;--bdr:#1e2035;--bdr2:#2a2c48;
-  --text:#dde0f5;--muted:#52557a;--dim:#2c2e4a;
-  --green:#00f08a;--grn2:#00b865;--red:#ff3d5a;--amber:#ffb020;--blue:#4d9fff;--purp:#b07aff;
-  --mono:'DM Mono',monospace;--sans:'Outfit',sans-serif;
-  --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
+# -*- coding: utf-8 -*-
+"""
+台股 SEPA 選股掃描器 v4（並行版）
+基於 Minervini SEPA + VCP 策略，完全適配台灣股票市場
+v4：加入 --chunk / --total-chunks / --output 參數
+    · 支援 GitHub Actions matrix 並行掃描（4組）
+    · 掃描完輸出 JSON 給 tw_merge_results.py 合併
+    · 單機執行（無 --chunk）維持原有行為
+資料來源：
+- 股票清單：FinMind TaiwanStockInfo
+- 股價歷史：yfinance（2330.TW 格式）
+- 基本面：yfinance .info
+- 大盤：yfinance ^TWII / 0050.TW
+"""
+import sys, time, warnings, datetime, os, smtplib, json, argparse
+import requests
+import pandas as pd
+import numpy as np
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+warnings.filterwarnings("ignore")
+try:
+    import yfinance as yf
+except ImportError:
+    print("pip install yfinance pandas numpy requests"); sys.exit(1)
+
+# ═══════════════════════════════════════════════════════════════════
+# 設定
+# ═══════════════════════════════════════════════════════════════════
+FINMIND_TOKEN    = os.environ.get("FINMIND_TOKEN", "")
+FINMIND_API      = "https://api.finmindtrade.com/api/v4/data"
+
+CAPITAL_TWD      = 200_000
+MAX_LOSS_PCT     = 0.02
+STOP_LOSS_PCT    = 0.07
+MAX_POSITION_PCT = 0.25
+
+# yfinance batch download 與美股版相同架構
+# 500 支：batch download 分 10 批，約 20-30 分鐘
+REQUEST_DELAY    = 0.3   # 個別 .info 呼叫間隔（秒）
+MAX_SCAN         = 500
+
+# ═══════════════════════════════════════════════════════════════════
+# 股票池設定
+# ═══════════════════════════════════════════════════════════════════
+
+# 掃描上限：600次/小時 ÷ 每支3次呼叫 = 最多200支
+# 設 MAX_SCAN = 200 可在1小時內跑完
+MAX_SCAN = 200   # 設 None 則掃全部（可能超過API限額）
+
+# 排除的產業（流動性低、不適合SEPA策略）
+EXCLUDE_CATEGORIES = {
+    "ETF", "證券投資信託基金", "受益憑證", "指數股票型基金",
+    "認購（售）權證", "牛證", "熊證", "可轉換公司債",
+    "存託憑證", "台灣存託憑證",
 }
-*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html{height:-webkit-fill-available}
-body{background:var(--bg);color:var(--text);font-family:var(--sans);
-  min-height:100vh;min-height:-webkit-fill-available;
-  overflow-x:hidden;-webkit-font-smoothing:antialiased;
-  padding-bottom:calc(90px + var(--sab))}
 
-/* ── HEADER ─────────────────────────────────────── */
-.hdr{background:rgba(7,8,16,.93);backdrop-filter:saturate(180%) blur(20px);
-  -webkit-backdrop-filter:saturate(180%) blur(20px);
-  border-bottom:1px solid var(--bdr);
-  padding:calc(var(--sat) + 14px) 16px 14px;
-  position:sticky;top:0;z-index:100}
-.hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-.hdr-title{font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--green)}
-.hdr-sub{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
-.hdr-btns{display:flex;gap:8px}
-.btn-icon{background:var(--card);border:1px solid var(--bdr2);color:var(--muted);
-  border-radius:20px;padding:0 14px;font-family:var(--mono);font-size:11px;
-  cursor:pointer;display:flex;align-items:center;gap:6px;height:44px;min-width:44px;
-  user-select:none;-webkit-user-select:none;white-space:nowrap;transition:border-color .15s,color .15s}
-.btn-icon:active{transform:scale(.95);border-color:var(--green);color:var(--green)}
-@keyframes spin{to{transform:rotate(360deg)}}
-.spinning{display:inline-block;animation:spin .7s linear infinite}
-.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-@media(max-width:480px){.stats-row{grid-template-columns:repeat(2,1fr)}}
-.stat-box{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:10px 11px;cursor:default}
-.stat-label{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px}
-.stat-val{font-family:var(--mono);font-size:15px;font-weight:500}
-.last-upd{font-family:var(--mono);font-size:9px;color:var(--muted);text-align:right;margin-top:6px}
+# 手動黑名單（成交量太低、下市風險等）
+BLACKLIST = {"9999", "0000"}
 
-/* ── BOTTOM NAV ─────────────────────────────────── */
-.bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:100;
-  background:rgba(7,8,16,.95);backdrop-filter:saturate(180%) blur(20px);
-  -webkit-backdrop-filter:saturate(180%) blur(20px);
-  border-top:1px solid var(--bdr);
-  padding:8px 0 calc(8px + var(--sab));
-  display:flex}
-.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
-  cursor:pointer;padding:6px 0;user-select:none;-webkit-user-select:none;
-  color:var(--muted);font-family:var(--mono);font-size:9px;letter-spacing:.05em;
-  text-transform:uppercase;border:none;background:none;transition:color .15s}
-.nav-btn:active{transform:scale(.92)}
-.nav-btn.active{color:var(--green)}
-.nav-icon{font-size:20px;line-height:1}
+# 優先掃描名單（確保這些一定納入，約 80 支核心股）
+PRIORITY = sorted(set([
+    # 護國群山 + 大型科技
+    "2330","2317","2454","2308","2382","2303","2357","2395","3711","4938",
+    # AI伺服器/散熱/網通
+    "3017","2345","3037","8046","6669","3533","6278","2376","6415",
+    "3034","2379","3443","5269","3661","4966","6719","6488","6510",
+    "6515","3596","6235","6269","6271","3006","2458","3149","3130",
+    "6533","3042","6531","3008","6414","3702",
+    # 半導體
+    "2344","2449","5347","4919","2441","6770","6239","8299","3406",
+    "3231","2325","2368","3189","8150",
+    # PCB/電子製造
+    "3044","2313","2392","2451","2354","2311","2312","2385","3481",
+    # 航運
+    "2603","2609","2610","2618","2614",
+    # 金融
+    "2881","2882","2891","2886","2884","2892","2880","2883","2885",
+    "2887","2890","5880","2823","5871","2812","2834",
+    # 石化/材料
+    "1301","1303","1326","6505","1101","1102",
+    # 電信/網路
+    "2412","3045","4904","3682","2408",
+    # 消費/零售
+    "2912","1216","2105","9904","2207",
+    # 傳產/機械/自行車
+    "2002","9910","9914","9921","9933","9938","1590","2059",
+    "1476","2049","1536","2231","9917","9945","9930","1717",
+    # 光學/精密
+    "3008","2353","2360","2495","3252",
+    # 飯店/餐飲
+    "2702","2707","2755","8438","2345",
+    # 其他熱門
+    "6506","6285","2377","2383","6176","8454","2362","1722","1723",
+    "6472","1789","2049","6116","4958","1590","2201","2206",
+]))
 
-/* ── PAGES ──────────────────────────────────────── */
-.page{display:none}
-.page.active{display:block}
-.main{max-width:860px;margin:0 auto;padding:18px 14px 20px}
-.sec-lbl{font-size:10px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;
-  letter-spacing:.18em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.sec-lbl::after{content:'';flex:1;height:1px;background:var(--bdr)}
+# ── 備用靜態清單（若 API 抓取失敗時使用）──────────────────────────
+_FALLBACK_UNIVERSE = sorted(set([
+    "2330","2317","2454","2308","2382","2303","2881","2882","2891","2886",
+    "2884","2892","2880","2883","2885","2887","2890","5880","1301","1303",
+    "1326","6505","2002","1216","2105","9904","2912","2207","2408","3711",
+    "2357","2345","4938","3034","2395","6669","2379","3008","6415","2376",
+    "2356","3045","4904","2412","1101","1102","2301","2337","2353","2360",
+    "6770","2449","3533","6278","3231","2324","2327","2344","2347","3037",
+    "3481","2474","5347","6414","3443","5269","6533","3702","2393","2409",
+    "3042","4966","6239","8299","3406","6443","3661","6531","4919","3706",
+    "6719","2441","6472","1590","2059","6269","8046","3189","3130","2385",
+    "3149","6488","6510","2368","2049","6271","3017","2458","6515","3596",
+    "6235","3006","1504","2206","1536","2231","6116","6285","2377","2383",
+    "2603","2609","2610","2618","2823","2812","5871","2354","3044","1476",
+    "1717","2201","9910","9914","9921","9933","9938","4958","3682","1789",
+    "2707","6176","8150","8454","2362","1722","1723","9917","9945","2834",
+    "6506","2495","3252","2702","2755","8438","2614","1102","2312","3050",
+    "2325","3443","6278","2311","8299","6239","6415","3034","2379","3711",
+]))
 
-/* ── MARKET BAR ─────────────────────────────────── */
-.mkt-bar{display:flex;align-items:center;gap:8px;padding:9px 13px;
-  background:var(--card);border:1px solid var(--bdr);border-radius:10px;
-  margin-bottom:20px;font-family:var(--mono);font-size:11px;color:var(--muted)}
-.mkt-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0}
-.mkt-dot.open{background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s ease-in-out infinite}
-.mkt-dot.pre{background:var(--amber);box-shadow:0 0 6px var(--amber)}
-.mkt-dot.aft{background:var(--blue)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+# ── 動態抓取全部上市上櫃股票清單 ────────────────────────────────
+def fetch_all_stock_ids(max_scan=500):
+    """
+    從 FinMind TaiwanStockInfo 抓全部股票，
+    篩掉 ETF/權證/低流動性，回傳代號清單。
+    不消耗 API 配額（v3 endpoint，無需 token）。
+    """
+    print("📋 從 FinMind 抓取全部台股清單...")
+    try:
+        r = requests.get(
+            "https://api.finmindtrade.com/api/v4/data",
+            params={"dataset": "TaiwanStockInfo", "token": FINMIND_TOKEN},
+            timeout=20
+        )
+        data = r.json()
+        if data.get("msg") != "success" or not data.get("data"):
+            raise ValueError("API 回傳失敗")
 
-/* ── ADD FORM ────────────────────────────────────── */
-.add-section{background:var(--card);border:1px solid var(--bdr);border-radius:14px;padding:16px;margin-bottom:24px}
-.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:12px}
-.field label{display:block;font-family:var(--mono);font-size:9px;color:var(--muted);
-  text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
-.field input{width:100%;background:var(--bg2);border:1px solid var(--bdr);color:var(--text);
-  border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:13px;
-  transition:border-color .15s}
-.field input:focus{outline:none;border-color:var(--green)}
-.stop-row{display:flex;gap:6px;align-items:center}
-.stop-toggle{display:flex;border:1px solid var(--bdr);border-radius:6px;overflow:hidden;flex-shrink:0}
-.stop-tab{background:transparent;border:none;color:var(--muted);cursor:pointer;padding:7px 10px;
-  font-family:var(--mono);font-size:11px;transition:background .15s,color .15s}
-.stop-tab.active{background:var(--green);color:#000;font-weight:600}
-.stop-input-wrap{flex:1}
-.stop-hint{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:4px;min-height:14px}
-.btn-primary{width:100%;background:var(--green);color:#000;border:none;border-radius:10px;
-  padding:13px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;
-  transition:opacity .15s}
-.btn-primary:active{opacity:.8;transform:scale(.99)}
+        df = pd.DataFrame(data["data"])
+        # 填充繁體中文名稱對照表
+        global _NAME_MAP
+        if "stock_name" in df.columns:
+            _NAME_MAP = dict(zip(df["stock_id"], df["stock_name"]))
+        # 只保留普通股（type = twse 上市 或 tpex 上櫃）
+        df = df[df["type"].isin(["twse", "tpex"])]
+        # 排除 ETF、權證、存託憑證等
+        df = df[~df["industry_category"].isin(EXCLUDE_CATEGORIES)]
+        # 排除代號含字母的（KY股保留，純字母排除）
+        df = df[df["stock_id"].str.match(r"^\d{4}[A-Z]?$")]
+        # 排除黑名單
+        df = df[~df["stock_id"].isin(BLACKLIST)]
 
-/* ── POSITION CARDS ─────────────────────────────── */
-.pos-card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;
-  margin-bottom:10px;overflow:hidden;transition:border-color .2s}
-.pos-card.sig-exit{border-color:#ff3d5a55}
-.pos-card.sig-run{border-color:#b07aff55}
-.pos-card.sig-trim{border-color:#ffb02055}
-.pos-card.sig-add{border-color:#4d9fff55}
-.pos-main{display:flex;align-items:flex-start;gap:10px;padding:14px 14px 0;cursor:pointer;user-select:none}
-.pos-ticker{font-size:17px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
-.pos-name{font-size:10px;color:var(--muted);font-family:var(--sans);margin-top:1px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
-.pos-lots{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
-.pos-middle{flex:1;min-width:0}
-.pos-pnl-row{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
-.pos-pnl-twd{font-size:16px;font-weight:600;font-family:var(--mono)}
-.pos-pnl-pct{font-size:12px;font-family:var(--mono)}
-.pos-bar-track{height:3px;background:var(--dim);border-radius:3px;margin-bottom:6px;overflow:hidden}
-.pos-bar-fill{height:3px;border-radius:3px;transition:width .5s}
-.pos-meta{display:flex;gap:12px;flex-wrap:wrap}
-.pos-meta-item{font-family:var(--mono);font-size:10px;color:var(--muted)}
-.pos-meta-item span{color:var(--text)}
-.pos-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
-.pos-current{font-size:16px;font-weight:600;font-family:var(--mono)}
-.pos-entry-small{font-size:10px;font-family:var(--mono);color:var(--muted)}
+        all_ids = df["stock_id"].tolist()
+        print(f"  全市場普通股：{len(all_ids)} 支")
 
-/* ── SIGNAL BADGE ────────────────────────────────── */
-.sig-badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;margin-top:4px;font-family:var(--sans)}
-.sig-badge.exit{background:#ff3d5a22;color:#ff3d5a;border:1px solid #ff3d5a44}
-.sig-badge.run{background:#b07aff22;color:#b07aff;border:1px solid #b07aff44}
-.sig-badge.trim{background:#ffb02022;color:#ffb020;border:1px solid #ffb02044}
-.sig-badge.hold{background:#00f08a22;color:#00f08a;border:1px solid #00f08a44}
-.sig-badge.add{background:#4d9fff22;color:#4d9fff;border:1px solid #4d9fff44}
-.sig-badge.watch{background:#52557a22;color:#888;border:1px solid #52557a44}
+        # 優先清單排在前面，其餘隨機補滿
+        priority_valid = [s for s in PRIORITY if s in all_ids]
+        rest = [s for s in all_ids if s not in set(priority_valid)]
 
-/* ── VCP STRIP ───────────────────────────────────── */
-.vcp-strip{display:flex;align-items:center;gap:6px;padding:8px 14px;
-  border-top:1px solid var(--bdr);font-family:var(--mono);font-size:10px;
-  flex-wrap:wrap;gap:6px}
-.vcp-lbl{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.1em}
-.vcp-stages{display:flex;align-items:center;gap:3px}
-.vcp-dot{width:7px;height:7px;border-radius:50%}
-.vcp-dot.done{background:var(--green)}
-.vcp-dot.curr{background:var(--amber)}
-.vcp-dot.pend{background:var(--dim);border:1px solid var(--muted)}
-.vcp-stxt{font-size:9px}
-.vcp-stxt.done{color:var(--green)}
-.vcp-stxt.curr{color:var(--amber)}
-.vcp-stxt.pend{color:var(--muted)}
-.vcp-arr{color:var(--dim);font-size:10px}
-.vcp-buy{color:var(--green);font-size:10px;font-weight:700;
-  background:rgba(0,240,138,.12);border:1px solid rgba(0,240,138,.3);
-  border-radius:5px;padding:2px 7px}
-.vcp-wait{color:var(--muted);font-size:10px}
-.vcp-loading{color:var(--dim);font-size:10px}
-.vcp-zone{color:var(--amber);font-family:var(--mono);font-size:10px;
-  background:rgba(255,176,32,.10);border:1px solid rgba(255,176,32,.25);
-  border-radius:5px;padding:2px 7px}
+        if max_scan:
+            # 優先 + 補足到 max_scan
+            universe = priority_valid + rest[:max(0, max_scan - len(priority_valid))]
+            universe = sorted(set(universe))[:max_scan]
+        else:
+            universe = sorted(set(priority_valid + rest))
 
-/* ── EXPANDED DETAIL ─────────────────────────────── */
-.pos-detail{padding:0 14px 14px}
-.lots-section{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;margin-bottom:10px}
-.lots-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
-.lot-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bdr)}
-.lot-row:last-child{border-bottom:none}
-.lot-date{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:75px}
-.lot-val{font-family:var(--mono);font-size:11px;flex:1}
-.lot-pnl{font-family:var(--mono);font-size:11px;text-align:right;min-width:60px}
-.lot-del{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 5px;font-size:12px}
-.lot-del:active{color:var(--red)}
+        print(f"  本次掃描：{len(universe)} 支（含優先名單 {len(priority_valid)} 支）")
+        return universe
 
-/* ── DETAIL GRID ─────────────────────────────────── */
-.detail-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
-@media(max-width:360px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
-.dc{background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px}
-.dc-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
-.dc-val{font-family:var(--mono);font-size:13px;font-weight:500}
+    except Exception as e:
+        print(f"  ⚠️ 抓取清單失敗（{e}），使用備用清單")
+        fallback = sorted(set(PRIORITY + _FALLBACK_UNIVERSE))
+        return fallback[:max_scan] if max_scan else fallback
 
-/* ── ANALYSIS BOX ────────────────────────────────── */
-.analysis-box{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.analysis-title{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
-.analysis-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-.analysis-item{background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px}
-.analysis-item-label{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
-.analysis-item-val{font-family:var(--mono);font-size:14px;font-weight:500}
-.rationale{font-size:12px;color:#aaa;line-height:1.6;border-top:1px solid var(--bdr);padding-top:10px;margin-top:6px}
+# ── 全域 UNIVERSE（在 main() 呼叫前會被覆寫）──────────────────────
+# 這裡只是佔位，實際在 main() 裡動態產生
+TW50 = [
+    "2330",  # 台積電
+    "2317",  # 鴻海
+    "2454",  # 聯發科
+    "2308",  # 台達電
+    "2382",  # 廣達
+    "2303",  # 聯電
+    "2357",  # 華碩
+    "2395",  # 研華
+    "2412",  # 中華電
+    "2408",  # 南亞科
+    "3711",  # 日月光投控
+    "4938",  # 和碩
+    "6669",  # 緯穎
+    "3008",  # 大立光
+    "6415",  # 矽力-KY
+    "2376",  # 技嘉
+    "2356",  # 英業達
+    "3045",  # 台灣大
+    "4904",  # 遠傳
+    "2345",  # 智邦
+    "3034",  # 聯詠
+    "2379",  # 瑞昱
+    "2881",  # 富邦金
+    "2882",  # 國泰金
+    "2891",  # 中信金
+    "2886",  # 兆豐金
+    "2884",  # 玉山金
+    "2892",  # 第一金
+    "2880",  # 華南金
+    "2883",  # 開發金
+    "2885",  # 元大金
+    "2887",  # 台新金
+    "2890",  # 永豐金
+    "5880",  # 合庫金
+    "1301",  # 台塑
+    "1303",  # 南亞
+    "1326",  # 台化
+    "6505",  # 台塑化
+    "2002",  # 中鋼
+    "1216",  # 統一
+    "2105",  # 正新
+    "9904",  # 寶成
+    "2207",  # 和泰車
+    "2353",  # 宏碁
+    "2301",  # 光寶科
+    "1101",  # 台泥
+    "1102",  # 亞泥
+    "2337",  # 旺宏
+    "2360",  # 致茂
+    "2615",  # 萬海
+]
 
-/* ── VCP PANEL ───────────────────────────────────── */
-.vcp-buy-banner{display:flex;align-items:center;gap:12px;padding:14px;
-  background:rgba(0,240,138,.07);border:1px solid rgba(0,240,138,.3);
-  border-radius:12px;margin-bottom:10px}
-.vcp-buy-banner-icon{font-size:24px;flex-shrink:0}
-.vcp-buy-banner-body{flex:1}
-.vcp-buy-banner-title{font-size:13px;font-weight:700;color:var(--green);margin-bottom:4px}
-.vcp-buy-banner-sub{font-size:11px;color:#aaa;line-height:1.6;font-family:var(--mono)}
-.vcp-buy-badge-lg{background:rgba(0,240,138,.15);color:var(--green);border:1px solid rgba(0,240,138,.4);
-  border-radius:8px;padding:6px 12px;font-family:var(--mono);font-size:11px;font-weight:700;flex-shrink:0}
-.vcp-panel{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.vcp-panel-title{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em}
-.vcp-dgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
-.vcp-dc{background:var(--card);border:1px solid var(--bdr);border-radius:7px;padding:7px 9px}
-.vcp-dc-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
-.vcp-dc-val{font-family:var(--mono);font-size:12px;font-weight:600}
-.vcp-cbar{display:flex;align-items:center;gap:3px;margin-bottom:8px;overflow:hidden}
-.vcp-cseg{height:6px;border-radius:3px;min-width:4px;transition:width .4s}
-.vcp-clbl{font-family:var(--mono);font-size:10px;color:var(--muted)}
-.vcp-rat{font-family:var(--mono);font-size:11px;color:#888;line-height:1.6;
-  border-top:1px solid var(--bdr);padding-top:8px;white-space:pre-line}
+# ── 台灣中型100（完整版）────────────────────────────────────────
+TW_MID100 = [
+    # 半導體 / IC設計
+    "2344",  # 華邦電
+    "2449",  # 京元電子
+    "3037",  # 欣興
+    "5347",  # 世界先進
+    "3443",  # 創意電子
+    "5269",  # 祥碩
+    "3661",  # 世芯-KY
+    "4966",  # 譜瑞-KY
+    "6719",  # 力旺
+    "4919",  # 新唐
+    "2441",  # 超豐
+    "6770",  # 力積電
+    "3533",  # 嘉澤
+    "6239",  # 力成
+    "8299",  # 群聯
+    "2368",  # 金像電
+    "3406",  # 玉晶光
+    "2059",  # 川湖
+    "3189",  # 景碩
+    "8046",  # 南電
+    "6278",  # 台表科
+    "2385",  # 群光
+    "3231",  # 緯創
+    "2347",  # 聯強
+    "2324",  # 仁寶
+    "2327",  # 國巨
+    "3481",  # 群創
+    "2474",  # 可成
+    "6414",  # 樺漢
+    "3702",  # 大聯大
+    "3042",  # 晶技
+    "6443",  # 元晶
+    "3706",  # 神達
+    "2393",  # 億光
+    "2409",  # 友達
+    "6533",  # 晶心科
+    "6531",  # 愛普
+    # 航運
+    "2603",  # 長榮
+    "2609",  # 陽明
+    "2610",  # 華航
+    "2618",  # 長榮航
+    # 金融/保險
+    "2823",  # 中壽
+    "2812",  # 台中銀
+    "2809",  # 京城銀
+    "2838",  # 聯邦銀
+    "2845",  # 遠東銀
+    "2849",  # 安泰銀
+    "2867",  # 三商壽
+    "2888",  # 新光金
+    "5871",  # 中租-KY
+    "6452",  # 康舒-KY
+    # 電子製造/PCB
+    "2311",  # 日月光
+    "2354",  # 鴻準
+    "3037",  # 欣興
+    "2313",  # 華通
+    "2392",  # 正威
+    "3044",  # 健鼎
+    "2451",  # 創見
+    "2498",  # 宏達電
+    "2325",  # 矽品
+    "1476",  # 儒鴻
+    "1504",  # 東元
+    "1590",  # 亞德客-KY
+    # 傳產/食品/消費
+    "1227",  # 佳格
+    "1301",  # 台塑（已在TW50）
+    "1402",  # 遠東新
+    "1476",  # 儒鴻
+    "1536",  # 和大
+    "1717",  # 長興
+    "2201",  # 裕隆
+    "2204",  # 中華
+    "2231",  # 為升
+    "2912",  # 統一超（已在TW50）
+    "9907",  # 統一實
+    "9910",  # 豐泰
+    "9914",  # 美利達
+    "9921",  # 巨大
+    "9933",  # 中鼎
+    "9938",  # 和成
+    # 電信/網通
+    "4958",  # 臻鼎-KY
+    "3682",  # 亞太電
+    "3673",  # TPK-KY
+    # 生技醫療
+    "1789",  # 神隆
+    "6472",  # 保瑞
+    # 房建/其他
+    "2501",  # 國建
+    "2542",  # 興富發
+    "5522",  # 遠雄
+    "2707",  # 晶華
+    "2903",  # 遠百
+    "2915",  # 潤泰全
+    "6176",  # 瑞儀
+    "8150",  # 南茂
+    "8454",  # 富邦媒
+    "8464",  # 億豐
+]
 
-/* ── TAKE PROFIT PLAN ────────────────────────────── */
-.tp-plan{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.tp-plan-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
-.tp-rows{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
-.tp-row{display:flex;align-items:center;gap:6px;padding:7px 9px;
-  background:var(--card);border:1px solid var(--bdr);border-radius:7px;
-  transition:background .15s,border-color .2s}
-.tp-row.tp-hit{background:rgba(0,240,138,.06);border-color:rgba(0,240,138,.3)}
-.tp-row.tp-active{border-color:var(--amber);background:rgba(255,176,32,.06)}
-.tp-num{font-family:var(--mono);font-size:11px;font-weight:700;min-width:22px}
-.tp-lbl{font-size:11px;flex:1}
-.tp-price{font-family:var(--mono);font-size:11px;min-width:80px;text-align:right}
-.tp-pnl{font-family:var(--mono);font-size:11px;min-width:70px;text-align:right;color:var(--green)}
-.tp-rr{font-family:var(--mono);font-size:10px;min-width:32px;text-align:right}
-.tp-sub{font-size:10px;color:var(--muted);padding:1px 9px 5px 37px;font-family:var(--mono)}
-.tp-next{font-family:var(--mono);font-size:11px;color:var(--amber);padding:6px 0;border-top:1px solid var(--bdr);margin-top:4px}
-.tp-stopmove{font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 0;line-height:1.8}
-.tp-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-.tp-act-btn{flex:1;min-width:80px;display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:8px 6px;border-radius:9px;border:1px solid var(--bdr);background:var(--card);
-  cursor:pointer;font-family:var(--mono);transition:border-color .15s,background .15s}
-.tp-act-btn:active{transform:scale(.97)}
-.t1-btn{border-color:#ffb02044;color:var(--amber)}
-.t1-btn:active,.t2-btn:active,.t3-btn:active{filter:brightness(1.3)}
-.t2-btn{border-color:#00b86544;color:var(--grn2)}
-.t3-btn{border-color:#00f08a44;color:var(--green)}
-.done-btn{border-color:#1e2035;color:var(--muted);background:var(--bg2);opacity:.6;cursor:default}
-.tp-act-badge{font-size:14px}
-.tp-act-lbl{font-size:9px;color:var(--muted);text-align:center;line-height:1.5}
-.tp-progress{display:flex;align-items:center;gap:5px;margin-top:6px;font-family:var(--mono);font-size:10px}
-.tp-progress-dot{width:8px;height:8px;border-radius:50%}
-.tp-done{background:var(--green)}
-.tp-pending{background:var(--dim);border:1px solid var(--muted)}
+# ── 熱門科技/AI/ETF相關個股（額外擴充）──────────────────────────
+TW_EXTRA = [
+    # AI伺服器/散熱
+    "3017",  # 奇鋐
+    "6596",  # 寬宏藝術（誤，改正）
+    "2049",  # 上銀
+    "3558",  # 神準
+    "3596",  # 智易
+    "6235",  # 華孚
+    "6269",  # 台郡
+    "6488",  # 環球晶
+    "6510",  # 精測
+    "6515",  # 穎崴
+    "3130",  # 一零四
+    "3149",  # 正達
+    "3006",  # 晶豪科
+    "2458",  # 義隆
+    "6271",  # 同欣電
+    "4743",  # 合一
+    "6550",  # 北極星藥業-KY
+    "6283",  # 淳安
+    "2360",  # 致茂（已在TW50）
+    "3034",  # 聯詠（已在TW50）
+    # 電動車/機器人概念
+    "1504",  # 東元
+    "2206",  # 三陽工業
+    "1536",  # 和大
+    "2231",  # 為升
+    "6116",  # 彩晶
+    "3474",  # 華亞科
+    # 高股息/金融科技
+    "2834",  # 臺企銀
+    "2801",  # 彰銀
+    "2809",  # 京城銀
+    # 其他熱門
+    "6285",  # 啟碁
+    "5264",  # 鎧勝-KY
+    "6176",  # 瑞儀
+    "2362",  # 藍天
+    "2377",  # 微星
+    "2383",  # 台光電
+    "2498",  # 宏達電
+    "3474",  # 華亞科
+    "1722",  # 台肥
+    "1723",  # 中石化
+    "9917",  # 中保科
+    "9945",  # 潤泰新
+]
 
-/* ── MISC ────────────────────────────────────────── */
-.detail-actions{display:flex;gap:8px;margin-top:10px}
-.btn-sm{padding:7px 14px;border-radius:8px;font-family:var(--mono);font-size:11px;cursor:pointer;border:1px solid}
-.btn-sm.danger{background:transparent;border-color:#ff3d5a44;color:#ff3d5a}
-.btn-sm.danger:active{background:#ff3d5a22}
-.pos-notes{font-size:11px;color:var(--muted);font-family:var(--mono);padding:8px 0;border-top:1px solid var(--bdr);margin-top:4px}
-.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
-.empty-state-icon{font-size:40px;margin-bottom:12px}
-.empty-state-title{font-size:15px;font-weight:600;margin-bottom:6px}
-.empty-state-sub{font-size:12px;font-family:var(--mono)}
+# 合併去重，排序
+UNIVERSE = sorted(set(TW50 + TW_MID100 + TW_EXTRA))
 
-/* ── SHIMMER ─────────────────────────────────────── */
-.shimmer{display:inline-block;background:linear-gradient(90deg,var(--bdr) 25%,var(--dim) 50%,var(--bdr) 75%);
-  background-size:200% 100%;animation:shimmer 1.4s infinite;border-radius:4px}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+TECH_KEYS   = ["T1","T2","T3","T4","T5","T6","T7"]
+TECH_LABELS = ["股價vs200MA","200MA趨勢","股價vs150MA","股價vs50MA",
+               "均線排列","距52W低","距52W高（突破距離）"]
 
-/* ── TOAST ───────────────────────────────────────── */
-.toast{position:fixed;bottom:calc(90px + 10px + var(--sab));left:50%;transform:translateX(-50%) translateY(10px);
-  background:#1a1d30;border:1px solid var(--bdr2);color:var(--text);
-  padding:10px 18px;border-radius:20px;font-family:var(--mono);font-size:12px;
-  opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;white-space:nowrap;z-index:999}
-.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
-/* ── MODAL ───────────────────────────────────────── */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:200;
-  display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;
-  transition:opacity .2s;padding-bottom:var(--sab)}
-.modal-overlay.show{opacity:1;pointer-events:all}
-.modal{background:#0f1020;border:1px solid var(--bdr2);border-radius:18px 18px 0 0;
-  padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto}
-.modal-title{font-size:15px;font-weight:700;color:var(--green);margin-bottom:4px}
-.modal-sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;line-height:1.6}
-.modal-json{font-family:var(--mono);font-size:10px;color:#aaa;
-  background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
-  padding:10px;max-height:200px;overflow-y:auto;white-space:pre;margin-bottom:12px}
-.modal-btns{display:flex;gap:8px}
-.btn-copy{flex:1;background:var(--green);color:#000;border:none;border-radius:10px;
-  padding:12px;font-family:var(--sans);font-size:13px;font-weight:700;cursor:pointer}
-.btn-mclose{flex:1;background:var(--card);color:var(--muted);border:1px solid var(--bdr);
-  border-radius:10px;padding:12px;font-family:var(--sans);font-size:13px;cursor:pointer}
+# ═══════════════════════════════════════════════════════════════════
+# FinMind API 抓取函式
+# ═══════════════════════════════════════════════════════════════════
+def fm_get(dataset, stock_id, start_date, end_date=None):
+    """通用 FinMind API 請求，回傳 DataFrame"""
+    params = {"dataset": dataset, "data_id": stock_id,
+              "start_date": start_date, "token": FINMIND_TOKEN}
+    if end_date:
+        params["end_date"] = end_date
+    try:
+        r = requests.get(FINMIND_API, params=params, timeout=20)
+        d = r.json()
+        if d.get("msg") == "success" and d.get("data"):
+            return pd.DataFrame(d["data"])
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
-/* ── SETTINGS ────────────────────────────────────── */
-.settings-card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;padding:16px;margin-bottom:14px}
-.settings-header{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.15em;margin-bottom:12px}
-.settings-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--bdr)}
-.settings-row:last-child{border-bottom:none}
-.settings-row-label{flex:1}
-.settings-row-title{font-size:13px;color:var(--text);margin-bottom:2px}
-.settings-row-desc{font-size:11px;color:var(--muted);font-family:var(--mono)}
-.settings-input{background:var(--bg2);border:1px solid var(--bdr);color:var(--text);
-  padding:7px 10px;border-radius:8px;font-family:var(--mono);font-size:13px;
-  width:110px;text-align:right}
-.settings-input-wide{width:180px;text-align:left}
-.settings-save-btn{width:100%;background:var(--green);color:#000;border:none;border-radius:10px;
-  padding:12px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px}
-.version-tag{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;padding-top:8px}
-</style>
+
+def fm_get_bulk(dataset, start_date):
+    """批量抓取（不指定 stock_id，一次拿所有股票）"""
+    params = {"dataset": dataset, "start_date": start_date, "token": FINMIND_TOKEN}
+    try:
+        r = requests.get(FINMIND_API, params=params, timeout=60)
+        d = r.json()
+        if d.get("msg") == "success" and d.get("data"):
+            return pd.DataFrame(d["data"])
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
+# ── 批量預載快取 ─────────────────────────────────────────────────
+_cache_rev   = {}   # stock_id → rev_g
+_cache_eps   = {}   # stock_id → eps_g
+_cache_gm    = {}   # stock_id → gm
+_cache_inst  = {}   # stock_id → inst_buy
+_NAME_MAP    = {}   # stock_id → 繁體中文公司名稱（由 fetch_all_stock_ids 填充）
+
+# ── yfinance 台股代號轉換 ────────────────────────────────────────
+def to_yf(stock_id):
+    """純數字代號 → yfinance 格式（2330 → 2330.TW）"""
+    s = str(stock_id)
+    if s.endswith(".TW") or s.endswith(".TWO"): return s
+    return s + ".TW"
+
+# ── Batch download 所有股票歷史（與美股版相同邏輯）─────────────
+_price_cache = {}   # stock_id → DataFrame
+
+def batch_download_tw(universe):
+    """批量下載台股歷史（yfinance，分批 50 支）"""
+    global _price_cache
+    yf_tickers = [to_yf(sid) for sid in universe]
+    chunks = [yf_tickers[i:i+50] for i in range(0, len(yf_tickers), 50)]
+
+    for idx, chunk in enumerate(chunks):
+        print(f"  下載批次 {idx+1}/{len(chunks)}（{len(chunk)} 支）...")
+        try:
+            raw = yf.download(chunk, period="1y", auto_adjust=True,
+                              progress=False, group_by="ticker", threads=True)
+            for yf_ticker in chunk:
+                sid = yf_ticker.replace(".TWO","").replace(".TW","")
+                try:
+                    df = raw if len(chunk)==1 else (
+                        raw[yf_ticker] if yf_ticker in raw.columns.get_level_values(0) else None)
+                    if df is not None and not df.empty and len(df) >= 210:
+                        _price_cache[sid] = df
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"  批次 {idx+1} 失敗：{e}")
+        time.sleep(2)
+
+    print(f"  → 成功下載 {len(_price_cache)} 支")
+
+
+# ── 基本面 cache（yfinance .info）─────────────────────────────
+_cache_eps  = {}
+_cache_rev  = {}
+_cache_gm   = {}
+_cache_inst = {}
+
+def preload_bulk_data():
+    """批量預載：基本面從 yfinance .info 取（與美股版相同）"""
+    # yfinance .info 需要逐支呼叫，但很快
+    # 實際基本面在 analyze() 裡個別抓，這裡只是保持介面一致
+    print("  ✅ 基本面將在分析時從 yfinance 個別取得")
+
+
+def fetch_price_history(stock_id, days=420):
+    """從 cache 取歷史資料，或單獨下載"""
+    sid = str(stock_id).replace(".TWO","").replace(".TW","")
+    if sid in _price_cache:
+        return _price_cache[sid]
+    # fallback：單獨下載
+    try:
+        yf_ticker = to_yf(sid)
+        raw = yf.download(yf_ticker, period="1y", auto_adjust=True, progress=False)
+        if raw is not None and not raw.empty:
+            return raw
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 評分系統（與美股版完全相同）
+# ═══════════════════════════════════════════════════════════════════
+def interp(val, bp):
+    if val is None: return 0.0
+    bp = sorted(bp)
+    if val <= bp[0][0]: return float(bp[0][1])
+    if val >= bp[-1][0]: return float(bp[-1][1])
+    for i in range(len(bp)-1):
+        x0,y0 = bp[i]; x1,y1 = bp[i+1]
+        if x0 <= val <= x1:
+            return float(y0 + (val-x0)/(x1-x0)*(y1-y0))
+    return 0.0
+
+def score_tech(price, ma50, ma150, ma200, ma200_1m, high52, low52):
+    res = {}
+    p200 = (price-ma200)/ma200*100 if ma200 > 0 else 0
+    res["T1"] = (round(interp(p200,[(-5,0),(0,1),(5,3),(15,6),(30,9),(50,10)]),1), f"{p200:+.1f}%", p200>0)
+    mc = (ma200-ma200_1m)/ma200_1m*100 if ma200_1m > 0 else 0
+    res["T2"] = (round(interp(mc,[(-2,0),(-0.5,2),(0,5),(0.5,7),(1.5,9),(3,10)]),1), f"{mc:+.2f}%", mc>0)
+    p150 = (price-ma150)/ma150*100 if ma150 > 0 else 0
+    res["T3"] = (round(interp(p150,[(-5,0),(0,1),(3,4),(10,7),(20,9),(35,10)]),1), f"{p150:+.1f}%", p150>0)
+    p50 = (price-ma50)/ma50*100 if ma50 > 0 else 0
+    res["T4"] = (round(interp(p50,[(-5,0),(0,1),(2,4),(8,7),(15,9),(25,10)]),1), f"{p50:+.1f}%", p50>0)
+    d1 = (ma50-ma150)/ma150*100 if ma150 > 0 else 0
+    d2 = (ma150-ma200)/ma200*100 if ma200 > 0 else 0
+    s5 = interp((d1+d2)/2,[(0,5),(0.5,6),(1.5,8),(3,9),(5,10)]) if d1>0 and d2>0 else (2.0 if d1>0 or d2>0 else 0.0)
+    res["T5"] = (round(s5,1), f"gap:{(d1+d2)/2:+.1f}%", s5>=5)
+    pfl = (price-low52)/low52*100 if low52 > 0 else 0
+    res["T6"] = (round(interp(pfl,[(0,0),(20,2),(30,3),(60,6),(100,8),(150,9),(200,10)]),1), f"+{pfl:.1f}%", pfl>=30)
+    pfh = (high52-price)/high52*100 if high52 > 0 else 100
+    s7  = round(interp(pfh,[(0,10),(3,9),(8,7),(15,5),(25,2),(40,0)]),1)
+    t7_label = f"🔥 -{pfh:.1f}% 即將突破" if pfh<=3 else (f"✨ -{pfh:.1f}% 接近突破" if pfh<=8 else (f"👀 -{pfh:.1f}% 整理中" if pfh<=15 else f"💤 -{pfh:.1f}% 距離遠"))
+    res["T7"] = (s7, t7_label, pfh<=25)
+    return res, round(sum(v[0] for v in res.values()),1), pfh
+
+def score_fund(eps_g, rev_g, gm, inst, rec):
+    """與美股版完全相同的基本面評分（5個指標）"""
+    res = {}
+    def fc(v, bp, thr):
+        if v is None: return (None,"N/A",None)
+        p = v*100
+        return (round(interp(p,bp),1), f"{p:.1f}%", p>=thr)
+    res["F1"] = fc(eps_g, [(0,0),(25,2),(50,5),(100,7),(200,9),(300,10)], 25)
+    res["F2"] = fc(rev_g, [(-10,0),(0,2),(8,4),(15,6),(25,8),(40,9),(60,10)], 0)
+    res["F3"] = fc(gm,    [(0,0),(30,2),(45,5),(60,7),(70,9),(80,10)], 30)
+    res["F4"] = fc(inst,  [(0,0),(50,2),(65,5),(75,7),(85,9),(95,10)], 50)
+    if rec is not None:
+        s = round(interp(rec,[(1,10),(1.5,9),(2,7),(2.5,4),(3,1),(3.5,0)]),1)
+        res["F5"] = (s, f"{rec:.1f}/5", rec<=2.5)
+    else:
+        res["F5"] = (None,"N/A",None)
+    avail = [v[0] for v in res.values() if v[0] is not None]
+    total = round(sum(avail)/(len(avail)*10)*50, 1) if avail else 0.0
+    return res, total
+
+def score_vol(vol_ratio):
+    s = round(interp(vol_ratio,[(0,0),(0.8,2),(1.0,5),(1.5,10),(2.0,14),(3.0,18),(4.0,20)]),1)
+    return s, f"{vol_ratio:.1f}x", vol_ratio>=1.5
+
+
+# ═══════════════════════════════════════════════════════════════════
+# VCP 型態分析
+# ═══════════════════════════════════════════════════════════════════
+def analyse_vcp(df, scan_mode="收盤"):
+    try:
+        close = df["Close"].dropna().values
+        high  = df["High"].dropna().values
+        low_s = df["Low"].dropna().values
+        vol   = df["Volume"].dropna().values
+        n = min(len(close), len(high), len(low_s), len(vol))
+        if n < 40: return {"stage":0,"status":"insufficient"}
+
+        def sr(s, e):
+            h = float(high[s:e].max()); l = float(low_s[s:e].min())
+            return h, l, (h-l)/h*100 if h>0 else 0
+
+        lb = min(n,252); base = n-lb; ql = max(1,lb//4)
+        _,_,q1 = sr(base,       base+ql)
+        _,_,q2 = sr(base+ql,    base+2*ql)
+        _,_,q3 = sr(base+2*ql,  base+3*ql)
+        _,_,q4 = sr(base+3*ql,  n)
+        _,_,t10= sr(max(0,n-10),n)
+
+        avg20    = float(vol[max(0,n-21):n-1].mean()) if n>21 else 1
+        last_vol = float(vol[-1])
+        vol_r    = round(last_vol/avg20,2) if avg20>0 else 0
+
+        q4h = high[max(0,n-30):n-1]
+        pivot = float(q4h.max())
+        for j in range(3, len(q4h)-3):
+            h = float(q4h[j])
+            if all(float(q4h[j-k])<=h for k in range(1,4)) and all(float(q4h[j+k])<=h for k in range(1,4)):
+                pivot = h
+        pivot = round(pivot,2)
+
+        last_c = float(close[-1]); last_h = float(high[-1]); last_l = float(low_s[-1])
+        day_range = last_h-last_l
+        close_pos = (last_c-last_l)/day_range if day_range>0 else 0.5
+        is_brk = last_c>pivot and close_pos>=0.6
+        is_vol = vol_r>=1.5
+        brk_pct= round((last_c-pivot)/pivot*100,2) if pivot>0 else 0
+
+        if scan_mode=="開盤":
+            entry_urgency = "open_go" if brk_pct<=1.0 else "open_chased"
+        else:
+            entry_urgency = "fresh" if brk_pct<=0.5 else ("watch" if brk_pct<=2.0 else "chased")
+
+        stage,note = 0,""
+        if q1>=12:                         stage,note = 1,f"大跌 {q1:.1f}%"
+        if stage>=1 and q2<q1 and q2>=5:  stage,note = 2,f"{q1:.1f}%→{q2:.1f}%"
+        if stage>=2 and q3<q2 and q3>=2:  stage,note = 3,f"{q2:.1f}%→{q3:.1f}%"
+        if stage>=3 and t10<=4.5:          stage,note = 4,f"橫盤 {t10:.1f}%"
+        if stage>=4 and is_brk and is_vol: stage,note = 5,f"突破 {vol_r:.1f}x量"
+
+        return {"stage":stage,"status":note,"q1":round(q1,1),"q2":round(q2,1),
+                "q3":round(q3,1),"q4":round(q4,1),"t10":round(t10,1),"vol_r":vol_r,
+                "is_brk":is_brk,"is_vol":is_vol,"close_pos":round(close_pos,2),
+                "brk_pct":brk_pct,"entry_urgency":entry_urgency,"scan_mode":scan_mode,
+                "pivot":pivot,"buy_low":pivot,"buy_high":round(pivot*1.02,2)}
+    except Exception:
+        return {"stage":0,"status":"error"}
+
+def vcp_score(vcp):
+    s = vcp.get("stage",0)
+    return [0,2,4,8,14,20][min(s,5)]
+
+def _vcp_stage_label(stage):
+    return ["未確認","大跌段","小跌段","更小跌","橫盤整理","🎯 突破!"][min(stage,5)]
+
+def _vcp_stage_col(stage):
+    return ["#555","#ff6b6b","#f5a623","#f5a623","#00d4b0","#00cc66"][min(stage,5)]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 評級 & 部位計算
+# ═══════════════════════════════════════════════════════════════════
+def grade(total):
+    p = total/160*100
+    if p>=86: return "A+","#00e676"
+    if p>=75: return "A", "#00cc66"
+    if p>=65: return "A-","#66bb6a"
+    if p>=55: return "B+","#d4e157"
+    if p>=45: return "B", "#f5a623"
+    return          "C", "#ff4444"
+
+def calc_position(price):
+    max_loss = CAPITAL_TWD * MAX_LOSS_PCT
+    stop     = round(price * (1-STOP_LOSS_PCT), 1)
+    risk_sh  = price - stop
+    if risk_sh <= 0: return None
+    risk_lot = risk_sh * 1000
+    max_lots = int(max_loss / risk_lot)
+    max_inv  = min(max_lots*price*1000, CAPITAL_TWD*MAX_POSITION_PCT)
+    lots     = max(int(max_inv/(price*1000)), 1) if price>0 else 0
+    return {"entry":price,"stop":stop,"risk_sh":round(risk_sh,1),
+            "lots":lots,"shares":lots*1000,
+            "invest":round(lots*price*1000,0),"max_loss":round(lots*risk_sh*1000,0)}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 市場廣度（台股）
+# ═══════════════════════════════════════════════════════════════════
+def get_tw_market_breadth():
+    """台股市場廣度 — 用 yfinance 抓（與美股版相同架構）"""
+    result = {}
+    targets = {"^TWII":"加權指數", "0050.TW":"元大台灣50", "0051.TW":"元大中型100"}
+    for sym, name in targets.items():
+        try:
+            raw   = yf.download(sym, period="1y", auto_adjust=True, progress=False)
+            if raw is None or raw.empty:
+                raise ValueError("empty")
+            close = raw["Close"].squeeze().dropna()
+            if len(close) < 5:
+                raise ValueError("insufficient")
+            price = float(close.iloc[-1])
+            ma200 = float(close.rolling(200).mean().iloc[-1]) if len(close)>=200 else float(close.mean())
+            ma50  = float(close.rolling(50).mean().iloc[-1])  if len(close)>=50  else float(close.mean())
+            chg1d = float((close.iloc[-1]-close.iloc[-2])/close.iloc[-2]*100) if len(close)>1 else 0
+            chg1w = float((close.iloc[-1]-close.iloc[-6])/close.iloc[-6]*100) if len(close)>6 else 0
+            result[sym] = {"name":name,"price":round(price,2),"ma200":round(ma200,2),
+                           "ma50":round(ma50,2),"above200":bool(price>ma200),
+                           "above50":bool(price>ma50),"chg1d":round(chg1d,2),"chg1w":round(chg1w,2)}
+            print(f"  {name}: {price:,.0f} ({'✓' if price>ma200 else '✗'}200MA {ma200:,.0f}) {chg1d:+.2f}%")
+        except Exception as e:
+            print(f"  {name} ({sym}) 抓取失敗：{e}")
+            result[sym] = {"name":name,"price":0,"above200":None,"above50":None,
+                           "chg1d":0,"chg1w":0,"ma200":0,"ma50":0}
+
+    # 若 ^TWII 失敗但 0050.TW 成功，用 0050 資料填入 ^TWII 顯示（避免顯示 0）
+    if result["^TWII"]["price"] == 0 and result["0050.TW"]["price"] > 0:
+        tw50 = result["0050.TW"]
+        result["^TWII"].update({
+            "price": tw50["price"], "ma200": tw50["ma200"], "ma50": tw50["ma50"],
+            "above200": tw50["above200"], "above50": tw50["above50"],
+            "chg1d": tw50["chg1d"], "chg1w": tw50["chg1w"],
+            "name": "加權指數（估）"
+        })
+
+    valid = [s for s in targets if result.get(s,{}).get("above200") is not None]
+    above = sum(1 for s in valid if result.get(s,{}).get("above200") is True)
+    ratio = above / max(len(valid),1)
+    if ratio>=0.9:   result["health"] = ("強勢多頭","#00cc66","三大指數均在200MA之上，全面做多")
+    elif ratio>=0.6: result["health"] = ("溫和多頭","#66bb6a","大部分指數健康，可正常操作")
+    elif ratio>=0.3: result["health"] = ("弱勢分化","#f5a623","市場廣度不足，謹慎選股")
+    else:            result["health"] = ("全面空頭","#ff4444","避免做多，等待市場修復")
+
+    twii = result.get("^TWII",{})
+    spy_trend  = result.get("0050.TW",{}).get("above200") or twii.get("above200")
+    spy_detail = f"加權指數 {twii.get('price',0):,.0f} / 200MA {twii.get('ma200',0):,.0f} / 日漲跌 {twii.get('chg1d',0):+.2f}%"
+    return result, spy_trend, spy_detail
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 分析單支股票
+# ═══════════════════════════════════════════════════════════════════
+def analyze(stock_id, scan_mode="收盤"):
+    try:
+        # 1. 股價歷史（從 batch cache 或個別下載）
+        df = fetch_price_history(stock_id)
+        if df is None or df.empty: return None
+
+        # 處理 MultiIndex columns（yfinance batch download 有時回傳）
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        # 確認必要欄位存在
+        if "Close" not in df.columns: return None
+        df = df.dropna(subset=["Close"])
+        if len(df) < 210: return None
+
+        close  = df["Close"].squeeze()
+        volume = df["Volume"].squeeze() if "Volume" in df.columns else pd.Series([1]*len(close), index=close.index)
+        close  = close.dropna()
+        volume = volume.reindex(close.index).fillna(0)
+        if len(close) < 210: return None
+
+        price    = float(close.iloc[-1])
+        ma50     = float(close.rolling(50).mean().iloc[-1])
+        ma150    = float(close.rolling(150).mean().iloc[-1])
+        ma200    = float(close.rolling(200).mean().iloc[-1])
+        ma200_1m = float(close.rolling(200).mean().iloc[-22]) if len(close)>222 else ma200
+        high52   = float(close.tail(252).max())
+        low52    = float(close.tail(252).min())
+        vol_today = float(volume.iloc[-1])
+        vol_avg50 = float(volume.tail(50).mean())
+        vol_ratio = round(vol_today/vol_avg50,2) if vol_avg50>0 else 0
+        if price<=0 or ma200<=0: return None
+
+        tech, tech_total, pfh = score_tech(price,ma50,ma150,ma200,ma200_1m,high52,low52)
+
+        # 2. 基本面：yfinance .info（與美股版完全相同）
+        eps_g=rev_g=gm=inst=rec=None
+        # 繁體中文名稱：直接從 FinMind TaiwanStockInfo 取（fetch_all_stock_ids 已填充 _NAME_MAP）
+        company_name = _NAME_MAP.get(str(stock_id), "")
+        try:
+            info  = yf.Ticker(to_yf(stock_id)).info
+            eps_g = info.get("earningsQuarterlyGrowth")
+            rev_g = info.get("revenueGrowth")
+            gm    = info.get("grossMargins")
+            inst  = info.get("heldPercentInstitutions")
+            rec   = info.get("recommendationMean")
+        except Exception:
+            pass
+        time.sleep(REQUEST_DELAY)
+
+        # 法人持股比例當作 inst_buy 的替代
+        inst_buy = None
+        inst_str = "N/A"
+        if inst is not None:
+            inst_str = f"{inst*100:.1f}%"
+
+        fund, fund_total = score_fund(eps_g, rev_g, gm, inst, rec)
+        vs, vstr, vpass  = score_vol(vol_ratio)
+
+        # 3. VCP
+        vcp     = analyse_vcp(df, scan_mode=scan_mode)
+        vcp_pts = vcp_score(vcp)
+        total   = round(tech_total + fund_total + vs + vcp_pts, 1)
+        letter, gcol = grade(total)
+        pct     = round(total/160*100)
+        fund_avail = sum(1 for v in fund.values() if v[0] is not None)
+        pfl     = round((price-low52)/low52*100,1) if low52>0 else 0
+        pos     = calc_position(price)
+
+        return dict(
+            stock_id=stock_id, price=round(price,2),
+            company_name=company_name,
+            total=total, pct=pct, letter=letter, gcol=gcol,
+            tech_total=round(tech_total,1), fund_total=round(fund_total,1),
+            vol_score=vs, vol_ratio=vol_ratio, vol_pass=vpass,
+            vcp=vcp, vcp_pts=vcp_pts,
+            fund_avail=fund_avail, tech=tech, fund=fund,
+            pfl=pfl, pfh=round(pfh,1),
+            pos=pos, inst_buy=inst_buy, inst_str=inst_str,
+            eps_g=eps_g, rev_g=rev_g, gm=gm,
+        )
+    except Exception as e:
+        print(f"  ❌ {stock_id} 分析失敗：{e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 三層分類
+# ═══════════════════════════════════════════════════════════════════
+def classify(results):
+    strong_idx, watch_idx, buy_idx = [], [], []
+    for i,r in enumerate(results):
+        tp = sum(1 for v in r["tech"].values() if v[2] is True)
+        vcp_stage = r.get("vcp",{}).get("stage",0)
+        # 台股基本面資料較少，門檻略放寬（F資料不足時不扣分）
+        is_strong = (tp>=5 and r["tech"]["T1"][2] and r["tech"]["T5"][2]
+                     and r["letter"] in ("A+","A","A-"))
+        is_watch  = (not is_strong and tp>=4
+                     and r["letter"] in ("A+","A","A-","B+","B"))
+        if is_strong:
+            strong_idx.append(i)
+            # 強力買進：技術面過關 + VCP≥3 + 總分≥85（台股放寬）
+            if (r["tech"]["T7"][0] is not None and r["tech"]["T7"][0] >= 6.0
+                    and r["tech"]["T6"][0] is not None and r["tech"]["T6"][0] >= 4.0
+                    and r["vol_ratio"] >= 1.2
+                    and r["total"] >= 85.0
+                    and vcp_stage >= 3):
+                buy_idx.append(i)
+        elif is_watch:
+            watch_idx.append(i)
+    watch_idx.sort(key=lambda i: -(results[i]["total"]))
+    return strong_idx, watch_idx, buy_idx
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HTML 共用 helpers（與美股版對齊）
+# ═══════════════════════════════════════════════════════════════════
+def _sym(ok): return "✓" if ok is True else ("✗" if ok is False else "·")
+def _scol(ok): return "#00cc66" if ok is True else ("#ff4444" if ok is False else "#555")
+def _sc(s, mx):
+    if s is None: return "#444"
+    p = s/mx
+    return "#00cc66" if p>=0.7 else ("#f5a623" if p>=0.4 else "#ff4444")
+
+def _bar(s, mx, col, w=60):
+    if s is None: return ""
+    bw = max(2, round(s/mx*w))
+    return (
+        '<div style="display:inline-block;background:#1e1e1e;border-radius:3px;'
+        'height:5px;width:'+str(w)+'px;vertical-align:middle;margin-left:4px">'
+        '<div style="background:'+col+';width:'+str(bw)+'px;height:5px;border-radius:3px"></div></div>'
+    )
+
+def _mini_dots(keys, labels, source):
+    parts = []
+    for j,k in enumerate(keys):
+        ok = source[k][2]; s = source[k][0]; lbl = labels[j]
+        tip = f"{lbl}: {s}/10" if s is not None else lbl
+        parts.append(
+            '<span style="color:'+_scol(ok)+';font-size:12px" title="'+tip+'">'+_sym(ok)+'</span>'
+        )
+    return "".join(parts)
+
+def _cond_table(labels, keys, data):
+    rows = ""
+    for lbl,k in zip(labels,keys):
+        d  = data.get(k,{})
+        s  = d.get("s"); v = d.get("v","N/A"); ok = d.get("ok")
+        sc = _sc(s,10); ss = f"{s:.1f}/10" if s is not None else "N/A"
+        rows += (
+            '<tr>'
+            '<td style="padding:3px 5px;color:'+_scol(ok)+';font-size:12px;width:14px">'+_sym(ok)+'</td>'
+            '<td style="padding:3px 5px;font-size:12px;color:#bbb">'+lbl+'</td>'
+            '<td style="padding:3px 5px;font-family:monospace;font-size:11px;color:'+sc+'">'
+            +ss+_bar(s,10,sc,52)+'</td>'
+            '<td style="padding:3px 5px;font-family:monospace;font-size:11px;color:#555">'+str(v)+'</td>'
+            '</tr>'
+        )
+    return '<table style="width:100%;border-collapse:collapse">'+rows+'</table>'
+
+def _vcp_html_detail(vcp):
+    """美股版 VCP 長條圖 + 進場區間，移植到台股（貨幣改 NT$）"""
+    if not vcp or vcp.get("status") in ("insufficient","error"):
+        return '<div style="color:#444;font-size:11px">VCP 資料不足</div>'
+    stage = vcp.get("stage",0)
+    sc    = _vcp_stage_col(stage)
+    sl    = _vcp_stage_label(stage)
+    drops = [vcp.get("q1",0), vcp.get("q2",0), vcp.get("q3",0), vcp.get("q4",0)]
+    mx    = max(drops) if max(drops) > 0 else 1
+    bar_cols = ["#ff6b6b","#f5a623","#f5a623","#00d4b0"]
+    bars_html = ""
+    for idx,(d,bc) in enumerate(zip(drops,bar_cols)):
+        bw = max(3, round(d/mx*50))
+        bars_html += (
+            '<div style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;margin-right:6px">'
+            '<div style="background:#1e1e1e;border-radius:3px;height:50px;width:14px;position:relative">'
+            '<div style="background:'+bc+';width:14px;height:'+str(bw)+'px;border-radius:3px;position:absolute;bottom:0"></div></div>'
+            '<span style="font-size:9px;color:#555">Q'+str(idx+1)+'</span>'
+            '<span style="font-size:9px;color:'+bc+';font-family:monospace">'+f'{d:.1f}'+'%</span>'
+            '</div>'
+        )
+    # 進場區間
+    buy_zone = ""
+    if stage >= 4:
+        urgency = vcp.get("entry_urgency","")
+        brk_pct = vcp.get("brk_pct",0)
+        vol_col = "#00cc66" if vcp.get("is_vol") else "#555"
+        vol_chk = "&nbsp;✅" if vcp.get("is_vol") else "&nbsp;❌"
+        if stage == 5:
+            if urgency in ("open_go","fresh"):
+                icon,txt,bg,bdr = "🎯","可進場","rgba(0,204,102,.10)","#00cc6655"
+            elif urgency == "watch":
+                icon,txt,bg,bdr = "⚠️",f"注意追高 +{brk_pct:.1f}%","rgba(245,166,35,.08)","#f5a62355"
+            else:
+                icon,txt,bg,bdr = "🚫",f"已追高 +{brk_pct:.1f}%，等整理","rgba(255,61,90,.08)","#ff3d5a55"
+        else:
+            icon,txt,bg,bdr = "⏳",f"等待突破 NT${vcp.get('pivot',0):,.0f}","rgba(0,212,176,.05)","#00d4b033"
+        buy_zone = (
+            '<div style="margin-top:6px;padding:7px 10px;background:'+bg+';'
+            'border:1px solid '+bdr+';border-radius:6px;font-size:11px;font-family:monospace">'
+            '<div style="font-weight:bold;margin-bottom:4px">'+icon+' '+txt+'</div>'
+            '<div style="color:#888">進場區間：<span style="color:#f5a623">'
+            'NT$'+f'{vcp.get("buy_low",0):,.0f}'
+            +' – NT$'+f'{vcp.get("buy_high",0):,.0f}'+'</span>'
+            '&nbsp;|&nbsp; 量能：<span style="color:'+vol_col+'">'+f'{vcp.get("vol_r",0):.1f}'+'x</span>'+vol_chk
+            +'</div></div>'
+        )
+    # 階段點
+    names = ["大跌","小跌","更小跌","橫盤","突破"]
+    dots = ""
+    for i in range(5):
+        if stage==5 or i<stage:  dc,tc = "#00cc66","#00cc66"
+        elif i==stage:            dc,tc = "#f5a623","#f5a623"
+        else:                     dc,tc = "#2a2a3a","#555"
+        arr = '<span style="color:#333;font-size:9px">›</span>' if i<4 else ""
+        dots += (
+            '<span style="display:inline-flex;align-items:center;gap:3px;margin-right:4px">'
+            '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+dc+'"></span>'
+            '<span style="font-size:10px;color:'+tc+'">'+names[i]+'</span>'+arr+'</span>'
+        )
+    t10_chk = "&nbsp;✅" if vcp.get("t10",100)<=4.5 else "&nbsp;❌"
+    brk_chk = "&nbsp;✅" if vcp.get("is_brk") else "&nbsp;❌"
+    return (
+        '<div style="background:#060612;border:1px solid #1a2030;border-radius:8px;padding:10px 12px">'
+        '<div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">'
+        '🔬 VCP 型態 &nbsp;<span style="color:'+sc+';font-weight:bold">'+sl+'</span>'
+        '&nbsp;<span style="color:#555;font-family:monospace;font-size:10px">+'+str(vcp_score(vcp))+'pt</span></div>'
+        '<div style="display:flex;align-items:center;gap:4px;margin-bottom:10px;flex-wrap:wrap">'+dots+'</div>'
+        '<div style="display:flex;align-items:flex-end;gap:2px;margin-bottom:6px;min-height:70px;padding-top:8px">'+bars_html+'</div>'
+        '<div style="font-size:10px;color:#555;font-family:monospace">T10波動 '
+        +f'{vcp.get("t10",0):.1f}%'+t10_chk
+        +'&nbsp;|&nbsp; Swing High NT$'+f'{vcp.get("pivot",0):,.0f}'+brk_chk
+        +'</div>'+buy_zone+'</div>'
+    )
+
+def _vcp_badge(vcp):
+    if not vcp: return '<span style="font-size:10px;color:#333">VCP...</span>'
+    stage = vcp.get("stage",0)
+    if vcp.get("status") in ("insufficient","error"):
+        return '<span style="font-size:10px;color:#333">-</span>'
+    sc = _vcp_stage_col(stage)
+    names = ["-","S1","S2","S3","S4","S5"]
+    label = names[min(stage,5)]
+    if stage==5:
+        urgency = vcp.get("entry_urgency","")
+        if urgency in ("open_go","fresh"): sc="#00cc66"; label="BUY"
+        elif urgency=="watch":             sc="#f5a623"; label="S5?"
+        else:                              sc="#ff3d5a"; label="LATE"
+    return (
+        '<span style="display:inline-block;padding:1px 7px;background:rgba(0,0,0,.4);'
+        'border:1px solid '+sc+'55;border-radius:4px;font-size:10px;color:'+sc+';'
+        'font-family:monospace;font-weight:bold">'+label+'</span>'
+    )
+
+TECH_LABELS_TW = ["股價vs200MA","200MA趨勢","股價vs150MA","股價vs50MA",
+                   "均線排列","距52W低","距52W高（突破距離）"]
+FUND_LABELS_TW = ["EPS季增","營收成長","毛利率","機構持股","分析師評級"]
+GRADE_LEGEND_TW = (
+    '評級：<span style="color:#00e676;font-weight:bold">A+</span> ≥86% &nbsp;'
+    '<span style="color:#00cc66;font-weight:bold">A</span> 75% &nbsp;'
+    '<span style="color:#66bb6a;font-weight:bold">A-</span> 65% &nbsp;'
+    '<span style="color:#d4e157;font-weight:bold">B+</span> 55% &nbsp;'
+    '<span style="color:#f5a623;font-weight:bold">B</span> 45% &nbsp;'
+    '<span style="color:#ff4444;font-weight:bold">C</span> &lt;45% &nbsp;|&nbsp;'
+    '滿分160=技術(70)+基本面(50)+量能(20)+VCP(20)'
+)
+
+_BASE_STYLE = (
+    '<style>*{box-sizing:border-box;margin:0;padding:0}'
+    'body{background:#080810;color:#e0e0e0;font-family:Arial,sans-serif;padding:14px;max-width:1100px;margin:0 auto}'
+    'details>summary::-webkit-details-marker{display:none}'
+    'details>summary::marker{display:none}</style>'
+)
+
+def _stat_boxes(nb, ns, nw, spy_col, spy_txt, spy_detail):
+    return (
+        f'<div style="background:#2a0a00;border:1px solid #ff6b35;border-radius:8px;padding:8px 12px;text-align:center">'
+        f'<div style="font-size:18px;font-weight:bold;color:#ff6b35">{nb}</div>'
+        f'<div style="font-size:10px;color:#888">🔥 強力買進</div></div>'
+        f'<div style="background:#0a2a1a;border:1px solid #00cc66;border-radius:8px;padding:8px 12px;text-align:center">'
+        f'<div style="font-size:18px;font-weight:bold;color:#00cc66">{ns}</div>'
+        f'<div style="font-size:10px;color:#888">🚀 強力候選</div></div>'
+        f'<div style="background:#2a2a0a;border:1px solid #f5a623;border-radius:8px;padding:8px 12px;text-align:center">'
+        f'<div style="font-size:18px;font-weight:bold;color:#f5a623">{nw}</div>'
+        f'<div style="font-size:10px;color:#888">⚡ 觀察清單</div></div>'
+        f'<div style="background:#111;border:1px solid #222;border-radius:8px;padding:8px 12px">'
+        f'<div style="font-size:10px;color:#555">加權指數</div>'
+        f'<div style="font-size:12px;font-weight:bold;color:{spy_col}">{spy_txt}</div>'
+        f'<div style="font-size:10px;color:#444">{spy_detail}</div></div>'
+    )
+
+def _html_header(today, mode_label, total_scanned, nb, ns, nw,
+                 spy_col, spy_txt, spy_detail, download_time, version=""):
+    return (
+        f'<div style="border-bottom:2px solid #00cc66;padding-bottom:12px;margin-bottom:14px;'
+        f'display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px">'
+        f'<div><div style="font-size:10px;color:#444;letter-spacing:.15em;text-transform:uppercase">'
+        f'台股 SEPA{version} · FinMind · {mode_label} · 點擊展開</div>'
+        f'<div style="font-size:20px;font-weight:bold;color:#00cc66">{today}</div>'
+        f'<div style="font-size:11px;color:#444;margin-top:2px">{total_scanned} 支有效 · 按總分排名</div>'
+        f'<div style="font-size:11px;color:#555;margin-top:3px">📥 {download_time} (台北)</div></div>'
+        f'<div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        f'{_stat_boxes(nb, ns, nw, spy_col, spy_txt, spy_detail)}'
+        f'</div></div>'
+    )
+
+def _footer():
+    return (
+        '<div style="background:#0d0d14;border-radius:8px;padding:10px 12px;'
+        'margin-top:14px;font-size:11px;color:#555;line-height:2">'
+        '⚠️ 進場確認：VCP型態 · 量能≥1.5x · 突破點+2%內 · 停損7-8%<br>'
+        '📊 FinMind 還原股價 · 台股單位：張（1張=1000股）</div>'
+        '<p style="color:#222;font-size:10px;margin-top:10px;text-align:center">'
+        '台股 SEPA 系統自動生成 · 僅供參考</p>'
+    )
+
+def _card(rank, r, spy_trend, border_col="#1a1a24"):
+    """完整移植美股版卡片（技術/基本面表格 + VCP 長條圖）"""
+    gc  = r["gcol"]
+    vc  = "#00cc66" if r["vol_pass"] else "#555"
+    vcp = r.get("vcp", {})
+    vcp_stage = vcp.get("stage", 0)
+    vcp_sc  = _vcp_stage_col(vcp_stage)
+    vcp_sl  = _vcp_stage_label(vcp_stage)
+    vcp_pts = r.get("vcp_pts", 0)
+    sid = r["stock_id"]
+    cname = r.get("company_name", "")
+    cname_span = (f'<br><span style="font-size:10px;color:#666;font-weight:normal;'
+                  f'font-family:PingFang TC,Microsoft JhengHei,sans-serif">{cname}</span>'
+                  if cname else '')
+    sid_html = (
+        f'<span style="font-family:monospace;font-size:15px;font-weight:bold;color:{gc};min-width:55px">{sid}'
+        + cname_span
+        + '</span>'
+    )
+
+    # 技術/基本面 dict 格式（_cond_table 用）
+    tc = {k:{"s":v[0],"v":v[1],"ok":v[2]} for k,v in r["tech"].items()}
+    fc = {k:{"s":v[0],"v":v[1],"ok":v[2]} for k,v in r["fund"].items()}
+
+    # 市場/量能
+    mc = {
+        "M1":{"s":None,"v":"0050在200MA之上" if spy_trend else "0050低於200MA","ok":spy_trend},
+        "M2":{"s":r["vol_score"],"v":f'{r["vol_ratio"]:.1f}x',"ok":r["vol_pass"]},
+    }
+
+    td  = _mini_dots(TECH_KEYS, TECH_LABELS_TW, r["tech"])
+    fd  = _mini_dots(["F1","F2","F3","F4"], FUND_LABELS_TW[:4], r["fund"])
+    bw  = max(2, round(r["total"]/160*100))
+
+    # 部位計算
+    pos = r.get("pos") or {}
+    pos_html = ""
+    if pos:
+        pos_html = (
+            f'<div style="margin-top:6px;padding:6px 9px;background:#0a1a0a;'
+            f'border:1px solid #1a3a1a;border-radius:6px;font-size:11px;font-family:monospace">'
+            f'建議 <span style="color:#f5a623;font-weight:bold">{pos["lots"]}張</span> '
+            f'@ NT${pos["entry"]:,.0f} ｜ 停損 <span style="color:#ff4444">NT${pos["stop"]:,.0f}</span> '
+            f'｜ 投入 NT${pos["invest"]/10000:.1f}萬 ｜ 最大虧損 NT${pos["max_loss"]:,.0f}</div>'
+        )
+
+    detail = (
+        '<div style="background:#060612;border:1px solid '+border_col+';border-top:none;'
+        'border-radius:0 0 10px 10px;padding:14px;'
+        'display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+        # 技術面
+        '<div><div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;'
+        'border-bottom:1px solid #151515;padding-bottom:3px;margin-bottom:6px">'
+        '📈 技術面 <span style="color:#66bb6a;font-family:monospace">'+f'{r["tech_total"]:.1f}'+'/70</span></div>'
+        +_cond_table(TECH_LABELS_TW, TECH_KEYS, tc)+'</div>'
+        # 基本面
+        '<div><div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;'
+        'border-bottom:1px solid #151515;padding-bottom:3px;margin-bottom:6px">'
+        '💰 基本面 <span style="color:#f5a623;font-family:monospace">'+f'{r["fund_total"]:.1f}'+'/50</span></div>'
+        +_cond_table(FUND_LABELS_TW, ["F1","F2","F3","F4","F5"], fc)+'</div>'
+        # VCP
+        '<div style="grid-column:1/-1"><div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;'
+        'border-bottom:1px solid #151515;padding-bottom:3px;margin-bottom:8px">'
+        '🔬 VCP 型態 <span style="color:'+vcp_sc+';font-family:monospace">'+vcp_sl+'</span>'
+        ' <span style="color:#555;font-size:10px;font-family:monospace">+'+str(vcp_pts)+'pt</span></div>'
+        +_vcp_html_detail(vcp)+'</div>'
+        # 市場/量能
+        '<div><div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;'
+        'border-bottom:1px solid #151515;padding-bottom:3px;margin-bottom:6px">'
+        '🌐 市場/量能 <span style="color:#888;font-family:monospace">'+f'{r["vol_score"]:.1f}'+'/20</span></div>'
+        +_cond_table(["0050在200MA之上","突破量能"],["M1","M2"],mc)+'</div>'
+        # 部位計算
+        '<div><div style="font-size:10px;color:#444;text-transform:uppercase;letter-spacing:.1em;'
+        'border-bottom:1px solid #151515;padding-bottom:3px;margin-bottom:6px">'
+        '💼 部位建議</div>'+pos_html+'</div>'
+        '</div>'
+    )
+
+    summary = (
+        '<summary style="list-style:none;cursor:pointer;background:#0d0d16;'
+        'border:1px solid '+border_col+';border-radius:10px;padding:11px 14px;'
+        'display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        '<span style="color:#555;font-size:11px;min-width:22px;text-align:center">'+str(rank)+'</span>'
+        +sid_html
+        +'<span style="font-family:monospace;font-size:12px;color:#999;min-width:75px">NT$'+f'{r["price"]:,.0f}'+'</span>'
+        '<span style="font-size:18px;font-weight:bold;color:'+gc+';font-family:monospace;min-width:40px">'+r["letter"]+'</span>'
+        '<span style="min-width:140px">'
+        '<span style="font-family:monospace;font-size:13px;font-weight:bold;color:'+gc+'">'+f'{r["total"]:.0f}'+'/160</span>'
+        '<span style="font-size:10px;color:#444"> ('+str(r["pct"])+'%)</span>'
+        '<div style="background:#1e1e1e;border-radius:3px;height:5px;margin-top:3px;width:100px">'
+        '<div style="background:'+gc+';width:'+str(bw)+'px;height:5px;border-radius:3px"></div></div></span>'
+        '<span style="font-size:11px;font-family:monospace;line-height:1.8;color:#777">'
+        '<span style="color:#66bb6a">T:'+f'{r["tech_total"]:.0f}'+'/70</span>'
+        '<span style="color:#f5a623;margin-left:5px">F:'+f'{r["fund_total"]:.0f}'+'/50</span>'
+        '<span style="margin-left:5px;color:'+vc+'">V:'+f'{r["vol_score"]:.0f}'+'/20</span>'
+        '<span style="margin-left:5px;color:'+vcp_sc+'">VCP+'+str(vcp_pts)+'</span></span>'
+        '<span style="letter-spacing:2px;font-size:12px">'+td+'</span>'
+        '<span style="letter-spacing:2px;font-size:12px;margin-left:4px">'+fd+'</span>'
+        +_vcp_badge(vcp)
+        +'</summary>'
+    )
+    return '<details style="margin-bottom:8px">'+summary+detail+'</details>'
+
+def make_iphone_html(results, strong_idx, watch_idx, buy_idx,
+                     today, total_scanned, spy_trend, spy_detail, breadth,
+                     download_time="—", mode_label="🌙 收盤掃描"):
+    spy_col = "#00cc66" if spy_trend else ("#ff4444" if spy_trend is False else "#888")
+    spy_txt = "✓ 多頭" if spy_trend else ("✗ 空頭" if spy_trend is False else "? 不足")
+    nb, ns, nw = len(buy_idx), len(strong_idx), len(watch_idx)
+    h_txt, h_col, h_desc = breadth.get("health",("N/A","#555",""))
+
+    strong_cards = "".join(_card(r+1, results[i], spy_trend)
+                           for r,i in enumerate(strong_idx[:50]))
+    watch_cards  = "".join(_card(r+1, results[i], spy_trend)
+                           for r,i in enumerate(watch_idx[:30]))
+    buy_block_html = ""
+    if buy_idx:
+        buy_cards = "".join(_card(r+1, results[i], spy_trend, "#ff6b3555")
+                            for r,i in enumerate(buy_idx[:10]))
+        buy_block_html = (
+            f'<div style="font-size:13px;font-weight:bold;color:#ff6b35;'
+            f'border-left:4px solid #ff6b35;padding-left:8px;margin-bottom:8px">'
+            f'🔥 強力買進（{nb} 支）</div>'
+            f'<div style="background:#1a0a00;border:2px solid #ff6b3566;'
+            f'border-radius:10px;padding:8px;margin-bottom:16px">{buy_cards}</div>'
+        )
+
+    # 廣度表（美股版同款）
+    breadth_rows = ""
+    for sid, name in [("^TWII","加權指數"),("0050.TW","台灣50 ETF"),("0051.TW","中型100 ETF")]:
+        bd = breadth.get(sid,{}); a200=bd.get("above200"); a50=bd.get("above50")
+        c1d=bd.get("chg1d",0); c1w=bd.get("chg1w",0)
+        breadth_rows += (
+            f'<tr style="border-bottom:1px solid #0f0f1a">'
+            f'<td style="padding:5px 8px;font-family:monospace;font-weight:bold;color:#ccc">{sid}</td>'
+            f'<td style="padding:5px 8px;font-size:11px;color:#888">{name}</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:12px;color:#ccc">{bd.get("price",0):,.0f}</td>'
+            f'<td style="padding:5px 8px;text-align:center;color:{_scol(a200)}">{_sym(a200)}200MA</td>'
+            f'<td style="padding:5px 8px;text-align:center;color:{_scol(a50)}">{_sym(a50)}50MA</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:{"#00cc66" if c1d>=0 else "#ff4444"}">{c1d:+.2f}%今日</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:{"#00cc66" if c1w>=0 else "#ff4444"}">{c1w:+.2f}%本週</td>'
+            f'</tr>'
+        )
+    breadth_html = (
+        f'<div style="background:#0d0d16;border:1px solid #1a1a24;border-radius:10px;'
+        f'padding:14px;margin-bottom:16px">'
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">'
+        f'<div style="font-size:13px;font-weight:bold;border-left:3px solid {h_col};'
+        f'padding-left:8px;color:{h_col}">📊 市場廣度</div>'
+        f'<span style="font-size:12px;font-weight:bold;color:{h_col}">{h_txt}</span>'
+        f'<span style="font-size:11px;color:#555">{h_desc}</span></div>'
+        f'<table style="width:100%;border-collapse:collapse">'
+        f'<thead><tr style="color:#444;font-size:10px;text-transform:uppercase">'
+        f'<th style="padding:4px 8px;text-align:left">代號</th>'
+        f'<th style="padding:4px 8px;text-align:left">指數</th>'
+        f'<th style="padding:4px 8px;text-align:left">現價</th>'
+        f'<th style="padding:4px 8px;text-align:center">200MA</th>'
+        f'<th style="padding:4px 8px;text-align:center">50MA</th>'
+        f'<th style="padding:4px 8px">今日</th>'
+        f'<th style="padding:4px 8px">本週</th>'
+        f'</tr></thead><tbody>{breadth_rows}</tbody></table></div>'
+    )
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>台股SEPA {today} iPhone</title>' + _BASE_STYLE + '</head><body>'
+        + _html_header(today, mode_label, total_scanned, nb, ns, nw,
+                       spy_col, spy_txt, spy_detail, download_time, " iPhone版")
+        + breadth_html
+        + f'<div style="font-size:11px;color:#444;margin-bottom:10px">'
+          f'{GRADE_LEGEND_TW}</div>'
+        + buy_block_html
+        + f'<div style="font-size:13px;font-weight:bold;color:#00cc66;border-left:3px solid #00cc66;padding-left:8px;margin-bottom:8px">🚀 強力候選（前50支）</div>'
+        + strong_cards
+        + f'<div style="font-size:13px;font-weight:bold;color:#f5a623;border-left:3px solid #f5a623;padding-left:8px;margin:16px 0 8px">⚡ 觀察清單（前30支）</div>'
+        + watch_cards
+        + _footer() + '</body></html>'
+    )
+
+def make_desktop_html(results, strong_idx, watch_idx, buy_idx,
+                      today, total_scanned, spy_trend, spy_detail, breadth,
+                      download_time="—", mode_label="🌙 收盤掃描"):
+    spy_col = "#00cc66" if spy_trend else ("#ff4444" if spy_trend is False else "#888")
+    spy_txt = "✓ 多頭，適合做多" if spy_trend else ("✗ 空頭，謹慎" if spy_trend is False else "? 資料不足")
+    nb, ns, nw = len(buy_idx), len(strong_idx), len(watch_idx)
+    h_txt, h_col, h_desc = breadth.get("health",("N/A","#555",""))
+
+    def _desktop_card(rank, r, cat, border="#1a1a24"):
+        card = _card(rank, r, spy_trend, border)
+        return card.replace('<details ', f'<details data-cat="{cat}" data-sid="{r["stock_id"]}" ')
+
+    buy_cards_d    = "".join(_desktop_card(r+1, results[i], "buy", "#ff6b3555")
+                             for r,i in enumerate(buy_idx[:10]))
+    strong_cards_d = "".join(_desktop_card(r+1, results[i], "strong")
+                             for r,i in enumerate(strong_idx[:50]))
+    watch_cards_d  = "".join(_desktop_card(r+1, results[i], "watch")
+                             for r,i in enumerate(watch_idx[:30]))
+
+    buy_blk = ""
+    if buy_idx:
+        buy_blk = (
+            f'<div style="font-size:13px;font-weight:bold;color:#ff6b35;'
+            f'border-left:4px solid #ff6b35;padding-left:8px;margin-bottom:8px;'
+            f'display:flex;align-items:center;gap:8px">'
+            f'🔥 強力買進（{nb} 支）'
+            f'<span style="font-size:10px;color:#555;font-weight:normal">'
+            f'距高≤10% · VCP≥S3 · 量比≥1.2x</span></div>'
+            f'<div style="background:#1a0a00;border:2px solid #ff6b3566;'
+            f'border-radius:10px;padding:8px;margin-bottom:16px">{buy_cards_d}</div>'
+        )
+
+    # 廣度表
+    breadth_rows = ""
+    for sid, name in [("^TWII","加權指數"),("0050.TW","台灣50 ETF"),("0051.TW","中型100 ETF")]:
+        bd=breadth.get(sid,{}); a200=bd.get("above200"); a50=bd.get("above50")
+        c1d=bd.get("chg1d",0); c1w=bd.get("chg1w",0)
+        breadth_rows += (
+            f'<tr style="border-bottom:1px solid #0f0f1a">'
+            f'<td style="padding:5px 8px;font-family:monospace;font-weight:bold;color:#ccc">{sid}</td>'
+            f'<td style="padding:5px 8px;font-size:11px;color:#888">{name}</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:12px;color:#ccc">{bd.get("price",0):,.0f}</td>'
+            f'<td style="padding:5px 8px;text-align:center;color:{_scol(a200)}">{_sym(a200)}200MA</td>'
+            f'<td style="padding:5px 8px;text-align:center;color:{_scol(a50)}">{_sym(a50)}50MA</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:{"#00cc66" if c1d>=0 else "#ff4444"}">{c1d:+.2f}%今日</td>'
+            f'<td style="padding:5px 8px;font-family:monospace;font-size:11px;color:{"#00cc66" if c1w>=0 else "#ff4444"}">{c1w:+.2f}%本週</td>'
+            f'</tr>'
+        )
+    breadth_html = (
+        f'<div style="background:#0d0d16;border:1px solid #1a1a24;border-radius:10px;'
+        f'padding:14px;margin-bottom:16px">'
+        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">'
+        f'<div style="font-size:13px;font-weight:bold;border-left:3px solid {h_col};'
+        f'padding-left:8px;color:{h_col}">📊 市場廣度</div>'
+        f'<span style="font-size:12px;font-weight:bold;color:{h_col}">{h_txt}</span>'
+        f'<span style="font-size:11px;color:#555">{h_desc}</span></div>'
+        f'<table style="width:100%;border-collapse:collapse">'
+        f'<thead><tr style="color:#444;font-size:10px;text-transform:uppercase">'
+        f'<th style="padding:4px 8px;text-align:left">代號</th>'
+        f'<th style="padding:4px 8px;text-align:left">指數</th>'
+        f'<th style="padding:4px 8px;text-align:left">現價</th>'
+        f'<th style="padding:4px 8px;text-align:center">200MA</th>'
+        f'<th style="padding:4px 8px;text-align:center">50MA</th>'
+        f'<th style="padding:4px 8px">今日</th>'
+        f'<th style="padding:4px 8px">本週</th>'
+        f'</tr></thead><tbody>{breadth_rows}</tbody></table></div>'
+    )
+
+    # 搜尋工具列
+    toolbar = (
+        '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;'
+        'background:#0d0d14;border-radius:8px;margin-bottom:10px;flex-wrap:wrap">'
+        '<input id="fq" placeholder="搜尋代號..." style="width:140px;background:#111;'
+        'border:1px solid #333;color:#eee;padding:5px 9px;border-radius:5px;font-size:12px" '
+        'oninput="applyF()">'
+        '<select id="ff" onchange="applyF()" style="background:#111;border:1px solid #333;'
+        'color:#eee;padding:5px 8px;border-radius:5px;font-size:12px">'
+        '<option value="all">全部顯示</option>'
+        '<option value="buy">🔥 強力買進</option>'
+        '<option value="strong">🚀 強力候選</option>'
+        '<option value="watch">⚡ 觀察清單</option></select>'
+        '<span id="fcnt" style="font-size:11px;color:#555"></span>'
+        '<div style="font-size:11px;color:#555;margin-left:auto">點擊任一行展開 · 再點一次收合</div></div>'
+    )
+    js = (
+        '<script>function applyF(){'
+        'var q=document.getElementById("fq").value.toLowerCase();'
+        'var f=document.getElementById("ff").value;'
+        'var all=document.querySelectorAll("details[data-cat]");var cnt=0;'
+        'all.forEach(function(d){'
+        'var sid=d.getAttribute("data-sid")||"";var cat=d.getAttribute("data-cat")||"";'
+        'var show=(f==="all"||cat===f)&&(!q||sid.toLowerCase().includes(q));'
+        'd.style.display=show?"":"none";if(show)cnt++;});'
+        'document.getElementById("fcnt").textContent=cnt+"支";}applyF();</script>'
+    )
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>台股SEPA {today} 電腦版</title>' + _BASE_STYLE + '</head><body>'
+        + _html_header(today, mode_label, total_scanned, nb, ns, nw,
+                       spy_col, spy_txt, spy_detail, download_time, " 電腦版")
+        + breadth_html
+        + f'<div style="font-size:11px;color:#444;margin-bottom:10px">{GRADE_LEGEND_TW} &nbsp;|&nbsp;'
+          f'突破距離：🔥≤3% ✨3-8% 👀8-15% 💤&gt;15%</div>'
+        + toolbar + buy_blk
+        + f'<div style="font-size:13px;font-weight:bold;color:#00cc66;border-left:3px solid #00cc66;padding-left:8px;margin-bottom:8px">🚀 強力候選（前50支）</div>'
+        + strong_cards_d
+        + f'<div style="font-size:13px;font-weight:bold;color:#f5a623;border-left:3px solid #f5a623;padding-left:8px;margin:16px 0 8px">⚡ 觀察清單（前30支）</div>'
+        + watch_cards_d
+        + _footer() + js + '</body></html>'
+    )
+    spy_col = "#00cc66" if spy_trend else ("#ff4444" if spy_trend is False else "#888")
+    spy_txt = "✓ 多頭，適合做多" if spy_trend else ("✗ 空頭，謹慎" if spy_trend is False else "? 資料不足")
+    nb, ns, nw = len(buy_idx), len(strong_idx), len(watch_idx)
+
+    strong_cards = "".join(_card(r+1, results[i]) for r,i in enumerate(strong_idx[:50]))
+    watch_cards  = "".join(_card(r+1, results[i]) for r,i in enumerate(watch_idx[:30]))
+
+    # 電腦版加搜尋工具列
+    toolbar = (
+        '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;'
+        'background:#0d0d14;border-radius:8px;margin-bottom:10px;flex-wrap:wrap">'
+        '<input id="fq" placeholder="搜尋代號..." style="width:140px;background:#111;'
+        'border:1px solid #333;color:#eee;padding:5px 9px;border-radius:5px;font-size:12px" '
+        'oninput="applyF()">'
+        '<select id="ff" onchange="applyF()" style="background:#111;border:1px solid #333;'
+        'color:#eee;padding:5px 8px;border-radius:5px;font-size:12px">'
+        '<option value="all">全部</option>'
+        '<option value="buy">🔥 強力買進</option>'
+        '<option value="strong">🚀 強力候選</option>'
+        '<option value="watch">⚡ 觀察清單</option></select>'
+        '<span id="fcnt" style="font-size:11px;color:#555"></span></div>'
+    )
+    js = (
+        '<script>'
+        'function applyF(){'
+        'var q=document.getElementById("fq").value.toLowerCase();'
+        'var f=document.getElementById("ff").value;'
+        'var all=document.querySelectorAll("details[data-cat]");'
+        'var cnt=0;'
+        'all.forEach(function(d){'
+        'var sid=d.getAttribute("data-sid")||"";'
+        'var cat=d.getAttribute("data-cat")||"";'
+        'var show=(f==="all"||cat===f)&&(!q||sid.toLowerCase().includes(q));'
+        'd.style.display=show?"":"none";if(show)cnt++;});'
+        'document.getElementById("fcnt").textContent=cnt+"支";}'
+        'applyF();</script>'
+    )
+
+    # 加 data 屬性到卡片（用於篩選）
+    def _desktop_card(rank, r, cat, border="#1a1a24"):
+        card = _card(rank, r, spy_trend, border)
+        return card.replace('<details ', f'<details data-cat="{cat}" data-sid="{r["stock_id"]}" ')
+
+    buy_cards_d    = "".join(_desktop_card(r+1, results[i], "buy", "#1a0a00")
+                             for r,i in enumerate(buy_idx[:10]))
+    strong_cards_d = "".join(_desktop_card(r+1, results[i], "strong")
+                             for r,i in enumerate(strong_idx[:50]))
+    watch_cards_d  = "".join(_desktop_card(r+1, results[i], "watch")
+                             for r,i in enumerate(watch_idx[:30]))
+
+    buy_blk = ""
+    if buy_idx:
+        buy_blk = (
+            f'<div style="font-size:13px;font-weight:bold;color:#ff6b35;'
+            f'border-left:4px solid #ff6b35;padding-left:8px;margin-bottom:8px">'
+            f'🔥 強力買進（{nb} 支）</div>'
+            f'<div style="background:#1a0a00;border:2px solid #ff6b3566;'
+            f'border-radius:10px;padding:8px;margin-bottom:16px">{buy_cards_d}</div>'
+        )
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>台股SEPA {today} 電腦版</title>' + _BASE_STYLE + '</head><body>'
+        + _html_header(today, mode_label, total_scanned, nb, ns, nw,
+                       spy_col, spy_txt, spy_detail, download_time, " 電腦版")
+        + _breadth_block(breadth)
+        + toolbar + buy_blk
+        + f'<div style="font-size:13px;font-weight:bold;color:#00cc66;border-left:3px solid #00cc66;padding-left:8px;margin-bottom:8px">🚀 強力候選（前50支）</div>'
+        + strong_cards_d
+        + f'<div style="font-size:13px;font-weight:bold;color:#f5a623;border-left:3px solid #f5a623;padding-left:8px;margin:16px 0 8px">⚡ 觀察清單（前30支）</div>'
+        + watch_cards_d
+        + _footer() + js + '</body></html>'
+    )
+
+def make_email_body(results, strong_idx, watch_idx, buy_idx,
+                    today, total_scanned, spy_trend, spy_detail, breadth,
+                    download_time="—", mode_label="🌙 收盤掃描"):
+    spy_col = "#00cc66" if spy_trend else ("#ff4444" if spy_trend is False else "#888")
+    spy_txt = "✓ 多頭" if spy_trend else ("✗ 空頭" if spy_trend is False else "?")
+    nb, ns, nw = len(buy_idx), len(strong_idx), len(watch_idx)
+
+    # 買進清單（精簡表格）
+    def tbl_row(rank, r):
+        sc  = _vcp_stage_col(r.get("vcp",{}).get("stage",0))
+        vn  = ["-","S1","S2","S3","S4","🎯S5"][min(r.get("vcp",{}).get("stage",0),5)]
+        t7  = r["tech"]["T7"][1] if r["tech"]["T7"][1] else ""
+        ic  = "#00cc66" if (r.get("inst_buy") or 0)>0 else "#ff4444"
+        cname = r.get("company_name","")
+        cname_html = (f'<br><span style="font-size:10px;color:#666;font-weight:normal;'
+                      f'font-family:PingFang TC,Microsoft JhengHei,sans-serif">{cname}</span>'
+                      if cname else "")
+        return (
+            f'<tr style="border-bottom:1px solid #1e2035">'
+            f'<td style="padding:5px 6px;color:#555;font-family:monospace">{rank}</td>'
+            f'<td style="padding:5px 6px;font-weight:bold;color:#00cc66;font-family:monospace">{r["stock_id"]}{cname_html}</td>'
+            f'<td style="padding:5px 6px;font-family:monospace">NT${r["price"]:,.0f}</td>'
+            f'<td style="padding:5px 6px;color:{r["gcol"]};font-weight:bold">{r["letter"]}</td>'
+            f'<td style="padding:5px 6px;font-family:monospace;color:{r["gcol"]}">{r["total"]:.0f}</td>'
+            f'<td style="padding:5px 6px;font-size:11px;color:{sc}">{vn}</td>'
+            f'<td style="padding:5px 6px;font-size:11px;color:#888">{t7}</td>'
+            f'<td style="padding:5px 6px;font-size:11px;color:{ic}">{r.get("inst_str","N/A")}</td>'
+            f'</tr>'
+        )
+
+    def make_table(idx, limit):
+        if not idx: return '<div style="color:#555;font-size:12px;padding:8px">（無）</div>'
+        rows = "".join(tbl_row(r+1, results[i]) for r,i in enumerate(idx[:limit]))
+        return (
+            '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+            '<tr style="background:#0d0d14;font-size:10px;color:#555;text-transform:uppercase">'
+            '<th style="padding:4px 6px">#</th><th>代號 / 公司</th><th>現價</th>'
+            '<th>評級</th><th>總分</th><th>VCP</th><th>突破距離</th><th>法人</th></tr>'
+            + rows + '</table>'
+        )
+
+    # 市場廣度摘要
+    bd_rows = ""
+    for sid, name in [("^TWII","加權指數"),("0050.TW","台灣50"),("0051.TW","中型100")]:
+        bd = breadth.get(sid,{})
+        c  = "#00cc66" if bd.get("above200") else ("#ff4444" if bd.get("above200") is False else "#555")
+        bd_rows += (
+            f'<tr><td style="padding:3px 8px;color:#888">{name}</td>'
+            f'<td style="padding:3px 8px;font-family:monospace;color:{c}">{bd.get("price",0):,.0f}</td>'
+            f'<td style="padding:3px 8px;font-family:monospace;color:#555">200MA {bd.get("ma200",0):,.0f}</td>'
+            f'<td style="padding:3px 8px;color:{"#00cc66" if bd.get("chg1d",0)>=0 else "#ff4444"}">'
+            f'{bd.get("chg1d",0):+.2f}%</td></tr>'
+        )
+
+    h_txt, h_col, h_desc = breadth.get("health",("N/A","#555",""))
+
+    return f'''<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>台股SEPA {today}</title>
 </head>
-<body>
+<body style="background:#080810;color:#e0e0e0;font-family:Arial,sans-serif;
+  max-width:700px;margin:0 auto;padding:16px">
 
-<!-- HEADER -->
-<div class="hdr">
-  <div class="hdr-top">
-    <div>
-      <div class="hdr-title">🇹🇼 台股 SEPA 持倉</div>
-      <div class="hdr-sub" id="hdr-sub">Minervini 策略 · 台幣計算</div>
-    </div>
-    <div class="hdr-btns">
-      <button type="button" class="btn-icon" id="btn-export">📋</button>
-      <button type="button" class="btn-icon" id="btn-refresh"><span id="ri">↻</span> <span id="rl">更新</span></button>
-    </div>
-  </div>
-  <div class="stats-row">
-    <div class="stat-box"><div class="stat-label">持倉市值</div><div class="stat-val" id="s-val" style="color:var(--text)">—</div></div>
-    <div class="stat-box"><div class="stat-label">總損益</div><div class="stat-val" id="s-pnl">—</div></div>
-    <div class="stat-box"><div class="stat-label">已投入</div><div class="stat-val" id="s-dep" style="color:var(--amber)">—</div></div>
-    <div class="stat-box"><div class="stat-label">最大虧損</div><div class="stat-val" id="s-loss" style="color:var(--red)">—</div></div>
-  </div>
-  <div class="last-upd" id="last-upd"></div>
+<div style="border-bottom:2px solid #00cc66;padding-bottom:12px;margin-bottom:16px">
+  <div style="font-size:10px;color:#444;letter-spacing:.15em;text-transform:uppercase">
+    台股 SEPA · FinMind · {mode_label}</div>
+  <div style="font-size:22px;font-weight:bold;color:#00cc66">{today}</div>
+  <div style="font-size:11px;color:#555">{total_scanned} 支掃描 · {download_time} 台北</div>
 </div>
 
-<!-- PAGE: PORTFOLIO -->
-<div class="page active" id="page-portfolio">
-<div class="main">
-  <div class="mkt-bar">
-    <div class="mkt-dot" id="mkt-dot"></div>
-    <span id="mkt-st" style="flex:1">—</span>
-    <span id="mkt-tm" style="color:var(--dim)"></span>
-  </div>
-
-  <!-- ADD FORM -->
-  <div class="add-section">
-    <div class="sec-lbl">新增持倉 / 加碼</div>
-    <div class="form-grid">
-      <div class="field"><label>代號（輸入數字即可）</label>
-        <input type="text" id="f-ticker" placeholder="2330" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false"></div>
-      <div class="field"><label>市場</label>
-        <select id="f-market" style="width:100%;background:var(--bg2);border:1px solid var(--bdr);color:var(--text);border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:13px">
-          <option value=".TW">上市 (.TW)</option>
-          <option value=".TWO">上櫃 (.TWO)</option>
-        </select>
-      </div>
-      <div class="field"><label>進場價（NT$）</label>
-        <input type="text" inputmode="decimal" id="f-entry" placeholder="850.00" autocomplete="off"></div>
-      <div class="field"><label>張數（1張=1000股）</label>
-        <input type="text" inputmode="decimal" id="f-lots" placeholder="2" autocomplete="off"></div>
-      <div class="field">
-        <label>停損</label>
-        <div class="stop-row">
-          <div class="stop-toggle">
-            <button type="button" class="stop-tab active" id="tab-price" data-mode="price">$</button>
-            <button type="button" class="stop-tab" id="tab-pct" data-mode="pct">%</button>
-          </div>
-          <div class="stop-input-wrap">
-            <input type="text" inputmode="decimal" id="f-stop" placeholder="792.00" autocomplete="off">
-          </div>
-        </div>
-        <div class="stop-hint" id="stop-hint"></div>
-      </div>
-      <div class="field"><label>進場日期</label>
-        <input type="date" id="f-date"></div>
-      <div class="field"><label>備注（選填）</label>
-        <input type="text" id="f-notes" placeholder="VCP突破，量1.8x" autocomplete="off"></div>
-    </div>
-    <button type="button" class="btn-primary" id="btn-add">＋ 加入 / 加碼</button>
-  </div>
-
-  <div class="sec-lbl">持倉清單</div>
-  <div id="pos-wrap">
-    <div class="empty-state" id="empty" style="display:none">
-      <div class="empty-state-icon">📭</div>
-      <div class="empty-state-title">尚無持倉</div>
-      <div class="empty-state-sub">輸入台股代號，開始追蹤你的部位</div>
-    </div>
-  </div>
-</div>
+<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+  <div style="background:#2a0a00;border:1px solid #ff6b35;border-radius:8px;padding:10px 16px;text-align:center">
+    <div style="font-size:24px;font-weight:bold;color:#ff6b35">{nb}</div>
+    <div style="font-size:11px;color:#888">🔥 強力買進</div></div>
+  <div style="background:#0a2a1a;border:1px solid #00cc66;border-radius:8px;padding:10px 16px;text-align:center">
+    <div style="font-size:24px;font-weight:bold;color:#00cc66">{ns}</div>
+    <div style="font-size:11px;color:#888">🚀 強力候選</div></div>
+  <div style="background:#2a2a0a;border:1px solid #f5a623;border-radius:8px;padding:10px 16px;text-align:center">
+    <div style="font-size:24px;font-weight:bold;color:#f5a623">{nw}</div>
+    <div style="font-size:11px;color:#888">⚡ 觀察清單</div></div>
+  <div style="background:{h_col}22;border:1px solid {h_col}55;border-radius:8px;padding:10px 16px;flex:1;min-width:120px">
+    <div style="font-size:11px;font-weight:bold;color:{h_col}">{h_txt}</div>
+    <div style="font-size:10px;color:#666;margin-top:3px">{h_desc}</div></div>
 </div>
 
-<!-- PAGE: SETTINGS -->
-<div class="page" id="page-settings">
-<div class="main">
-  <div class="sec-lbl">交易設定</div>
-
-  <div class="settings-card">
-    <div class="settings-header">資金設定（台幣）</div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">總資金 (NT$)</div>
-        <div class="settings-row-desc">計算部位大小的基礎</div>
-      </div>
-      <input class="settings-input" id="cfg-capital" type="text" inputmode="decimal" placeholder="500000">
-    </div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">單筆最大虧損 (%)</div>
-        <div class="settings-row-desc">佔總資金的百分比</div>
-      </div>
-      <input class="settings-input" id="cfg-maxloss" type="text" inputmode="decimal" placeholder="2">
-    </div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">預設停損 (%)</div>
-        <div class="settings-row-desc">新增時的預設停損幅度</div>
-      </div>
-      <input class="settings-input" id="cfg-defstop" type="text" inputmode="decimal" placeholder="7">
-    </div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">單筆最大持倉 (%)</div>
-        <div class="settings-row-desc">佔總資金的最大比重</div>
-      </div>
-      <input class="settings-input" id="cfg-maxpos" type="text" inputmode="decimal" placeholder="25">
-    </div>
-  </div>
-
-  <div class="settings-card" style="margin-top:14px">
-    <div class="settings-header">FinMind API（台股即時報價）</div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">FinMind Token</div>
-        <div class="settings-row-desc">finmindtrade.com 取得，無 CORS 限制</div>
-      </div>
-      <input class="settings-input" style="width:180px;text-align:left;font-size:10px"
-        id="cfg-token" type="text" autocomplete="off" autocorrect="off"
-        autocapitalize="none" spellcheck="false" placeholder="eyJ0eXAiOi...">
-    </div>
-  </div>
-
-  <button type="button" class="settings-save-btn" id="btn-save-settings">儲存設定</button>
-
-  <div class="settings-card" style="margin-top:24px">
-    <div class="settings-header">⚠️ 危險區域</div>
-    <div class="settings-row">
-      <div class="settings-row-label">
-        <div class="settings-row-title">清除所有持倉</div>
-        <div class="settings-row-desc">刪除所有台股持倉資料，無法復原</div>
-      </div>
-      <button type="button" class="btn-sm danger" id="btn-clear-all">清除</button>
-    </div>
-  </div>
-
-  <div class="version-tag">台股 SEPA Tracker v1.1 · FinMind API · Minervini SEPA + VCP</div>
-</div>
+<div style="background:#0d0d14;border-radius:8px;padding:10px 12px;margin-bottom:14px">
+  <table style="width:100%;border-collapse:collapse;font-size:12px">{bd_rows}</table>
 </div>
 
-<!-- BOTTOM NAV -->
-<nav class="bottom-nav">
-  <button type="button" class="nav-btn active" data-page="portfolio">
-    <span class="nav-icon">📊</span>持倉
-  </button>
-  <button type="button" class="nav-btn" data-page="settings">
-    <span class="nav-icon">⚙️</span>設定
-  </button>
-</nav>
-
-<!-- EXPORT MODAL -->
-<div class="modal-overlay" id="modal">
-  <div class="modal">
-    <div>
-      <div class="modal-title">📋 匯出持倉 JSON</div>
-      <div class="modal-sub">複製後可備份你的台股持倉資料</div>
-    </div>
-    <div class="modal-json" id="modal-json"></div>
-    <div class="modal-btns">
-      <button type="button" class="btn-copy" id="btn-copy">複製 JSON</button>
-      <button type="button" class="btn-mclose" id="btn-mclose">關閉</button>
-    </div>
-  </div>
+<div style="background:#1a0a00;border:1px solid #ff6b3566;border-radius:8px;
+  padding:10px 12px;margin-bottom:14px">
+  <div style="font-size:13px;font-weight:bold;color:#ff6b35;margin-bottom:8px">
+    🔥 強力買進</div>
+  {make_table(buy_idx, 10)}
 </div>
 
-<div class="toast" id="toast"></div>
+<div style="background:#0d0d14;border-radius:8px;padding:10px 12px;margin-bottom:14px">
+  <div style="font-size:13px;font-weight:bold;color:#00cc66;margin-bottom:8px">
+    🚀 強力候選（前30支）</div>
+  {make_table(strong_idx, 30)}
+</div>
 
-<script>
-(function(){
-'use strict';
+<div style="background:#1a1a00;border:1px solid #f5a62333;border-radius:8px;
+  padding:10px 12px;margin-bottom:14px">
+  <div style="font-size:13px;font-weight:bold;color:#f5a623;margin-bottom:8px">
+    ⚡ 觀察清單（前20支）</div>
+  {make_table(watch_idx, 20)}
+</div>
 
-// ── Storage ───────────────────────────────────────
-var _mem={};
-var store={
-  get:function(k){try{var v=localStorage.getItem(k);return v?JSON.parse(v):null}catch(e){return _mem[k]!=null?_mem[k]:null}},
-  set:function(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){_mem[k]=v}}
-};
+<div style="background:#0d0d14;border:1px solid #1e2035;border-radius:8px;
+  padding:10px 12px;font-size:11px;color:#888;line-height:1.8">
+  📎 附件1 = iPhone版（手機展開閱讀）· 附件2 = 電腦版（搜尋篩選）· 下載後用瀏覽器開啟<br>
+  ⚠️ 進場確認：VCP型態 · 量能≥1.5x · 突破點+2%內 · 停損7-8%<br>
+  💰 資金 NT${CAPITAL_TWD:,} · 單筆最大虧損 NT${int(CAPITAL_TWD*MAX_LOSS_PCT):,}（{int(MAX_LOSS_PCT*100)}%）
+</div>
 
-// ── Config（台幣版）─────────────────────────────
-var cfg = Object.assign({
-  capital: 200000,
-  maxLossPct: 2,
-  defStopPct: 7,
-  maxPosPct: 25,
-  finmindToken: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJkYXRlIjoiMjAyNi0wNC0xMiAxNzo0MjozNyIsInVzZXJfaWQiOiJyZW5laG8xMjAyIiwiZW1haWwiOiJyZW5lMTIzNDU0MzEwQHlhaG9vLmNvbS50dyIsImlwIjoiMTA0LjI4LjEzMy4yNCJ9.ROmruWAwMyFpos65d7jbXOdtA_DGhOEvApDVPPWl8Ko',
-}, store.get('tw_sepa_cfg') || {});
+<p style="color:#222;font-size:10px;margin-top:10px;text-align:center">
+  台股 SEPA 系統自動生成 · 僅供參考 · {today}</p>
+</body></html>'''
 
-function saveCfg(){ store.set('tw_sepa_cfg', cfg); }
 
-// ── Positions ─────────────────────────────────────
-var lots = store.get('tw_sepa_positions') || [];
-var prices = {};
-var vcpData = {};
-var stockNames = store.get('tw_sepa_names') || {};
-var tpPhase = store.get('tw_sepa_tp_phase') || {};
-var expanded = null;
-var loading  = false;
-var stopMode = 'pct';
+# ═══════════════════════════════════════════════════════════════════
+# 寄信（郵件本體 + iPhone + 電腦版附件）
+# ═══════════════════════════════════════════════════════════════════
+def send_email(body_html, iphone_html, desktop_html,
+               today, nb, ns, nw, mode_label):
+    from email.mime.base import MIMEBase
+    from email import encoders as enc
+    s = os.environ.get("EMAIL_SENDER")
+    p = os.environ.get("EMAIL_PASSWORD")
+    r = os.environ.get("EMAIL_RECIPIENT")
+    if not all([s, p, r]):
+        print("⚠️ 未設定 Email 環境變數"); return
 
-// ── Helpers ───────────────────────────────────────
-function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
-function pn(id){ var r=(document.getElementById(id).value||'').replace(/[^\d.]/g,''); var n=parseFloat(r); return isNaN(n)?0:n; }
-function pnv(v){ var r=(v||'').toString().replace(/[^\d.]/g,''); var n=parseFloat(r); return isNaN(n)?0:n; }
-function f2(n,d){ return Number(n).toFixed(d==null?2:d); }
-// 台幣金額格式（整數，用萬表示大金額）
-function twd(n){
-  var a=Math.abs(Math.round(n));
-  var s=(n<0?'-':'')+'NT$';
-  if(a>=10000) return s+(a/10000).toFixed(1)+'萬';
-  return s+a.toLocaleString();
-}
-function pcol(n){ return n>=0?'var(--green)':'var(--red)'; }
-function ppct(n){ return (n>=0?'+':'')+Number(n).toFixed(1)+'%'; }
+    recipients = [a.strip() for a in r.split(",") if a.strip()]
+    scan_lbl   = "開盤" if "開盤" in mode_label else "收盤"
 
-function toast(msg){
-  var t=document.getElementById('toast');
-  t.textContent=msg; t.classList.add('show');
-  setTimeout(function(){ t.classList.remove('show'); }, 2200);
-}
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = (f"📊 台股SEPA {scan_lbl} {today} "
+                      f"| 🔥{nb} 🚀{ns} ⚡{nw} | 2個附件")
+    msg["From"] = s
+    msg["To"]   = ", ".join(recipients)
+    msg.attach(MIMEText(body_html, "html", "utf-8"))
 
-// ── 台股代號正規化 ────────────────────────────────
-// 用戶輸入 "2330" → "2330.TW"
-// 用戶輸入 "2330.TW" → "2330.TW"（不變）
-function normalizeTicker(raw, market){
-  var t = (raw||'').trim().toUpperCase();
-  if(t.endsWith('.TW') || t.endsWith('.TWO')) return t;
-  return t + (market || '.TW');
-}
-// 顯示用：去掉後綴
-function displayTicker(ticker){
-  return ticker.replace('.TWO','').replace('.TW','');
-}
+    for html_content, fname in [
+        (iphone_html,  f"台股SEPA_{today}_iPhone.html"),
+        (desktop_html, f"台股SEPA_{today}_電腦版.html"),
+    ]:
+        att = MIMEBase("text", "html")
+        att.set_payload(html_content.encode("utf-8"))
+        enc.encode_base64(att)
+        att.add_header("Content-Disposition", "attachment", filename=fname)
+        att.add_header("Content-Type", "text/html; charset=utf-8")
+        msg.attach(att)
 
-// ── Group lots ────────────────────────────────────
-function getGroups(){
-  var map={};
-  lots.forEach(function(lot){
-    var t=lot.ticker;
-    if(!map[t]) map[t]={ticker:t,lots:[],totalLots:0,totalShares:0,totalCost:0,minStop:Infinity};
-    map[t].lots.push(lot);
-    map[t].totalLots   += lot.lots||0;
-    map[t].totalShares += (lot.lots||0)*1000;
-    map[t].totalCost   += lot.entry*(lot.lots||0)*1000;
-    map[t].minStop = Math.min(map[t].minStop, lot.stop);
-  });
-  Object.keys(map).forEach(function(t){
-    var g=map[t];
-    g.avgEntry = g.totalCost / g.totalShares;
-    var sw=0; g.lots.forEach(function(l){ sw+=l.stop*(l.lots||0)*1000; }); g.avgStop=sw/g.totalShares;
-    g.firstDate = g.lots.reduce(function(a,b){ return a.date<b.date?a:b; }).date;
-    g.notes = g.lots.filter(function(l){ return l.notes; }).map(function(l){ return l.notes; }).join(' · ');
-  });
-  return Object.values(map).sort(function(a,b){ return a.ticker.localeCompare(b.ticker); });
-}
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+            srv.login(s, p)
+            srv.sendmail(s, recipients, msg.as_string())
+        print(f"✅ 郵件已寄送（本體摘要 + iPhone版 + 電腦版）至 {', '.join(recipients)}")
+    except Exception as e:
+        print(f"❌ 寄信失敗：{e}")
 
-// ── 台股市場時間（台北 UTC+8，週一至週五 09:00–13:30）
-function twNow(){
-  var now=new Date();
-  return new Date(now.getTime() + (now.getTimezoneOffset() + 8*60)*60000);
-}
-function updateMkt(){
-  var dot=document.getElementById('mkt-dot'),st=document.getElementById('mkt-st'),tm=document.getElementById('mkt-tm');
-  var tw=twNow(),day=tw.getDay(),h=tw.getHours(),m=tw.getMinutes(),mins=h*60+m;
-  var wknd=(day===0||day===6);
-  var open=!wknd&&mins>=540&&mins<810;   // 09:00–13:30
-  var pre =!wknd&&mins>=480&&mins<540;   // 08:00–09:00 盤前
-  var aft =!wknd&&mins>=810&&mins<960;   // 13:30–16:00 盤後
-  dot.className='mkt-dot';
-  if(open){dot.classList.add('open');st.textContent='台股開盤中';st.style.color='var(--green)';}
-  else if(pre){dot.classList.add('pre');st.textContent='盤前準備';st.style.color='var(--amber)';}
-  else if(aft){dot.classList.add('aft');st.textContent='收盤後';st.style.color='var(--blue)';}
-  else{st.textContent=wknd?'週末休市':'台股休市';st.style.color='var(--muted)';}
-  tm.textContent=String(tw.getHours()).padStart(2,'0')+':'+String(tw.getMinutes()).padStart(2,'0')+' TWN';
-}
-updateMkt(); setInterval(updateMkt,30000);
 
-// ── FinMind 報價（主要）+ Yahoo 備援 ──────────────
-var FINMIND_API = 'https://api.finmindtrade.com/api/v4/data';
 
-function fetchOneTW(ticker){
-  // 台股代號：從 "2330.TW" 或 "2330.TWO" 取出純數字
-  var sid = ticker.replace(/\.(TW|TWO)$/i, '');
-  var token = cfg.finmindToken || '';
+# ═══════════════════════════════════════════════════════════════════
+# 台北時間工具
+# ═══════════════════════════════════════════════════════════════════
+def get_taipei_time():
+    """回傳 (taipei_now, dl_time_str)"""
+    now_taipei = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    return now_taipei, now_taipei.strftime("%H:%M") + " TST"
 
-  // ① FinMind TaiwanStockPrice（有 token 時使用）
-  if(token){
-    var today = new Date();
-    var start = new Date(today.getTime() - 5*24*3600*1000)
-                  .toISOString().slice(0,10);
-    var params = 'dataset=TaiwanStockPrice&data_id='+encodeURIComponent(sid)
-               + '&start_date='+start+'&token='+encodeURIComponent(token);
-    return fetch(FINMIND_API+'?'+params, {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-      .then(function(d){
-        if(d.msg !== 'success' || !d.data || !d.data.length)
-          throw new Error('no data');
-        var rows = d.data.sort(function(a,b){ return a.date>b.date?1:-1; });
-        var last = rows[rows.length-1];
-        var prev = rows.length>1 ? rows[rows.length-2] : last;
-        return {
-          price:   parseFloat(last.close),
-          prevClose: parseFloat(prev.close),
-          change1d: prev.close ? (last.close - prev.close)/prev.close*100 : 0,
-          high:    parseFloat(last.max),
-          low:     parseFloat(last.min),
-          open:    parseFloat(last.open),
-          currency:'TWD'
-        };
-      })
-      .catch(function(){ return _fetchOneTW_yahoo(ticker); }); // fallback
-  }
 
-  // ② 無 token 直接用 Yahoo
-  return _fetchOneTW_yahoo(ticker);
-}
+# ═══════════════════════════════════════════════════════════════════
+# 主程式
+# ═══════════════════════════════════════════════════════════════════
+def parse_args():
+    p = argparse.ArgumentParser(description="台股 SEPA 掃描器 v4")
+    p.add_argument("--mode",         default="close", choices=["open","close"])
+    p.add_argument("--email",        action="store_true")
+    p.add_argument("--max-scan",     type=int, default=None)
+    p.add_argument("--chunk",        type=int, default=None,
+                   help="目前是第幾組（0-based），不傳表示單機完整執行")
+    p.add_argument("--total-chunks", type=int, default=4,
+                   help="總共幾組（預設 4）")
+    p.add_argument("--output",       type=str, default=None,
+                   help="輸出 JSON 路徑（並行模式用）")
+    return p.parse_args()
 
-function _fetchOneTW_yahoo(ticker){
-  var to   = Math.floor(Date.now()/1000);
-  var from = to - 10*24*3600;
-  var qs   = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
-  var sym  = encodeURIComponent(ticker);
 
-  function tryFetch(base){
-    return fetch(base+sym+qs, {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-      .then(function(d){
-        var res = d&&d.chart&&d.chart.result&&d.chart.result[0];
-        if(!res) throw new Error('no result');
-        var q  = res.indicators&&res.indicators.quote&&res.indicators.quote[0];
-        var closes = q&&q.close||[];
-        var n = closes.length;
-        if(!n) throw new Error('no data');
-        var c  = closes[n-1];
-        var pc = n>1 ? closes[n-2] : c;
-        // 儲存中文名稱（從 meta 取得）
-        var meta = res.meta||{};
-        var rawName = meta.longName || meta.shortName || '';
-        if(rawName){ stockNames[ticker]=rawName; store.set('tw_sepa_names',stockNames); }
-        return {
-          price:   c,  prevClose: pc,
-          change1d: pc ? (c-pc)/pc*100 : 0,
-          high:    (q.high||[])[n-1]||c,
-          low:     (q.low||[])[n-1]||c,
-          open:    (q.open||[])[n-1]||c,
-          currency:'TWD'
-        };
-      });
-  }
-  return tryFetch('https://query2.finance.yahoo.com/v8/finance/chart/')
-    .catch(function(){ return tryFetch('https://query1.finance.yahoo.com/v8/finance/chart/'); });
-}
+def main():
+    args = parse_args()
 
-function fetchAll(cb){
-  var groups=getGroups();
-  if(!groups.length){ cb&&cb(); return; }
-  var done=0;
-  groups.forEach(function(g,i){
-    setTimeout(function(){
-      fetchOneTW(g.ticker)
-        .then(function(d){ prices[g.ticker]=d; })
-        .catch(function(){})
-        .finally(function(){
-          done++;
-          if(done===groups.length){
-            document.getElementById('last-upd').textContent='最後更新 '+new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'});
-            cb&&cb();
-          }
-        });
-    }, i*200);
-  });
-}
+    if not FINMIND_TOKEN:
+        print("❌ 請設定環境變數 FINMIND_TOKEN"); sys.exit(1)
 
-// ══════════════════════════════════════════════════
-// VCP Analysis Engine（台股版，邏輯相同）
-// ══════════════════════════════════════════════════
-function analyseVCP(ohlcv){
-  if(!ohlcv||ohlcv.length<40) return {stage:0,status:'insufficient'};
-  var n=ohlcv.length;
-  function sr(s,e){
-    var hi=-Infinity,lo=Infinity;
-    for(var i=s;i<=e;i++){if(ohlcv[i].h>hi)hi=ohlcv[i].h;if(ohlcv[i].l<lo)lo=ohlcv[i].l;}
-    return {hi:hi,lo:lo,drop:(hi-lo)/hi*100};
-  }
-  var lb=Math.min(n,252),base=n-lb,ql=Math.floor(lb/4);
-  var q1=sr(base,base+ql-1),q2=sr(base+ql,base+2*ql-1);
-  var q3=sr(base+2*ql,base+3*ql-1),q4=sr(base+3*ql,n-1);
-  var t10=sr(Math.max(0,n-10),n-1);
-  var last=ohlcv[n-1],avg20=0;
-  for(var i=Math.max(0,n-21);i<n-1;i++) avg20+=ohlcv[i].v;
-  avg20/=20;
-  var volR=avg20>0?last.v/avg20:0;
-  // pivot: highest in last 30 bars
-  var rHi=-Infinity;
-  for(var i=Math.max(0,n-31);i<n-1;i++) if(ohlcv[i].h>rHi) rHi=ohlcv[i].h;
-  var isBrk=last.c>rHi,isVol=volR>=1.5;
-  var stage=0,note='';
-  if(q1.drop>=12)                               {stage=1;note='大跌段 '+q1.drop.toFixed(1)+'%';}
-  if(stage>=1&&q2.drop<q1.drop&&q2.drop>=5)    {stage=2;note=q1.drop.toFixed(1)+'%→'+q2.drop.toFixed(1)+'%';}
-  if(stage>=2&&q3.drop<q2.drop&&q3.drop>=2)    {stage=3;note=q2.drop.toFixed(1)+'%→'+q3.drop.toFixed(1)+'%';}
-  if(stage>=3&&t10.drop<=4.5)                   {stage=4;note='橫盤 '+t10.drop.toFixed(1)+'%';}
-  if(stage>=4&&isBrk&&isVol)                    {stage=5;note='突破 '+volR.toFixed(1)+'x量';}
-  return {stage:stage,status:note,q1:q1.drop,q2:q2.drop,q3:q3.drop,q4:q4.drop,
-    t10:t10.drop,volR:volR,isBrk:isBrk,isVol:isVol,
-    buyLow:rHi,buyHigh:rHi*1.02,rHi:rHi};
-}
+    scan_mode  = "開盤" if args.mode == "open" else "收盤"
+    mode_label = "🌅 開盤掃描" if args.mode == "open" else "🌙 收盤掃描"
+    today      = datetime.date.today().strftime("%Y-%m-%d")
+    _, dl_time = get_taipei_time()
 
-function parseYahooOHLCV(raw){
-  var res=raw&&raw.chart&&raw.chart.result&&raw.chart.result[0];
-  if(!res) throw new Error('no result');
-  var ts=res.timestamp||[];
-  var q=res.indicators&&res.indicators.quote&&res.indicators.quote[0];
-  if(!q||!ts.length) throw new Error('no quotes');
-  var ohlcv=[];
-  for(var i=0;i<ts.length;i++){
-    if(q.close[i]==null) continue;
-    ohlcv.push({t:ts[i],o:q.open[i]||q.close[i],h:q.high[i]||q.close[i],
-      l:q.low[i]||q.close[i],c:q.close[i],v:q.volume[i]||0});
-  }
-  if(ohlcv.length<10) throw new Error('insufficient');
-  return ohlcv;
-}
+    if datetime.date.today().weekday() >= 5:
+        print("今天是週末，跳過"); return
 
-function fetchOHLCV(ticker){
-  var sid   = ticker.replace(/\.(TW|TWO)$/i, '');
-  var token = cfg.finmindToken || '';
-  var start = new Date(Date.now() - 400*24*3600*1000).toISOString().slice(0,10);
+    parallel_mode = args.chunk is not None
+    scan_limit    = args.max_scan or MAX_SCAN
 
-  // ① FinMind TaiwanStockPriceAdj（還原股價，VCP 更準確）
-  if(token){
-    var params = 'dataset=TaiwanStockPriceAdj&data_id='+encodeURIComponent(sid)
-               + '&start_date='+start+'&token='+encodeURIComponent(token);
-    return fetch(FINMIND_API+'?'+params, {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-      .then(function(d){
-        if(d.msg !== 'success' || !d.data || d.data.length < 10)
-          throw new Error('insufficient');
-        var rows = d.data.sort(function(a,b){ return a.date>b.date?1:-1; });
-        return rows.map(function(r){
-          return {
-            t: new Date(r.date).getTime()/1000,
-            o: parseFloat(r.open),
-            h: parseFloat(r.max),
-            l: parseFloat(r.min),
-            c: parseFloat(r.close),
-            v: parseFloat(r.Trading_Volume||r.volume||0)
-          };
-        });
-      })
-      .catch(function(){ return _fetchOHLCV_yahoo(ticker); }); // fallback
-  }
+    # ① 動態抓取股票清單（每個 chunk 都抓，但各自用不同子集）
+    print("📋 抓取台股清單...")
+    full_universe = fetch_all_stock_ids(max_scan=scan_limit)
 
-  return _fetchOHLCV_yahoo(ticker);
-}
+    if parallel_mode:
+        # 將 full_universe 拆成 N 組，取第 chunk 組
+        total      = args.total_chunks
+        chunk_size = (len(full_universe) + total - 1) // total
+        start      = args.chunk * chunk_size
+        end        = min(start + chunk_size, len(full_universe))
+        my_universe = full_universe[start:end]
 
-function _fetchOHLCV_yahoo(ticker){
-  var to  = Math.floor(Date.now()/1000);
-  var from= to - 365*24*3600;
-  var sym = encodeURIComponent(ticker);
-  var qs  = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
+        print(f"\n{'='*60}")
+        print(f"  台股 SEPA v4 — {today}  [{scan_mode}]")
+        print(f"  Chunk {args.chunk+1}/{total}：股票 {start}–{end-1}（{len(my_universe)} 支）")
+        print(f"{'='*60}\n")
+    else:
+        my_universe = full_universe
+        print(f"\n{'='*60}")
+        print(f"  台股 SEPA v4 — {today}  [{scan_mode}]（單機完整執行）")
+        print(f"  掃描上限：{scan_limit or '全部'} 支")
+        print(f"{'='*60}\n")
 
-  function attempt(base){
-    return fetch(base+sym+qs, {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-      .then(function(d){ return parseYahooOHLCV(d); });
-  }
+    # ② Batch download 此組股票歷史
+    print(f"\n📡 Batch download {len(my_universe)} 支台股歷史...")
+    batch_download_tw(my_universe)
 
-  return attempt('https://query2.finance.yahoo.com/v8/finance/chart/')
-    .catch(function(){ return attempt('https://query1.finance.yahoo.com/v8/finance/chart/'); })
-    .catch(function(){
-      var u = 'https://query1.finance.yahoo.com/v8/finance/chart/'+sym+qs;
-      return fetch('https://api.allorigins.win/get?url='+encodeURIComponent(u), {cache:'no-store'})
-        .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-        .then(function(d){ var raw=d.contents?JSON.parse(d.contents):d; return parseYahooOHLCV(raw); });
-    });
-}
+    # ③ 市場廣度（每組都抓，merge 取第一個有效值）
+    print("\n📊 抓取台股市場廣度...")
+    breadth, spy_trend, spy_detail = get_tw_market_breadth()
 
-function fetchVCPAll(cb){
-  var groups=getGroups();
-  if(!groups.length){cb&&cb();return;}
-  var done=0;
-  groups.forEach(function(g,i){
-    setTimeout(function(){
-      fetchOHLCV(g.ticker)
-        .then(function(ohlcv){vcpData[g.ticker]=analyseVCP(ohlcv);})
-        .catch(function(){vcpData[g.ticker]={stage:0,status:'error'};})
-        .finally(function(){done++;if(done===groups.length){cb&&cb();}});
-    },i*250);
-  });
-}
+    # ④ 逐支分析
+    print(f"\n🔍 開始分析 {len(my_universe)} 支...\n")
+    results = []
+    for i, sid in enumerate(my_universe):
+        print(f"  [{i+1:3d}/{len(my_universe)}] {sid}...", end=" ", flush=True)
+        r = analyze(sid, scan_mode=scan_mode)
+        if r:
+            results.append(r)
+            print(f"✓ {r['letter']} {r['total']:.0f}分")
+        else:
+            print("跳過")
 
-// ── VCP HTML ──────────────────────────────────────
-function buildVcpStrip(ticker){
-  var vcp=vcpData[ticker];
-  var html='<div class="vcp-strip"><span class="vcp-lbl">VCP</span>';
-  if(!vcp) return html+'<span class="vcp-loading">分析中…</span></div>';
-  if(vcp.status==='insufficient'||vcp.status==='error')
-    return html+'<span class="vcp-loading">'+(vcp.status==='error'?'資料取得失敗':'資料不足')+'</span></div>';
-  var stage=vcp.stage,names=['大跌','小跌','更小跌','橫盤','突破'];
-  html+='<div class="vcp-stages">';
-  for(var i=0;i<5;i++){
-    var cls=stage===5?'done':(i<stage-1?'done':(i===stage-1?'curr':'pend'));
-    html+='<span class="vcp-dot '+cls+'"></span><span class="vcp-stxt '+cls+'">'+names[i]+'</span>';
-    if(i<4) html+='<span class="vcp-arr">›</span>';
-  }
-  html+='</div>';
-  if(stage===5){
-    html+='<span class="vcp-buy">🎯 建議買進</span>'
-      +'<span class="vcp-zone">NT$'+vcp.buyLow.toFixed(1)+'–'+vcp.buyHigh.toFixed(1)+'</span>';
-  } else if(stage>=4){
-    html+='<span class="vcp-wait">⏳ 等待突破+量能≥1.5x</span>';
-  } else if(stage>0){
-    html+='<span class="vcp-wait" style="color:var(--muted)">第 '+stage+'/5 階段</span>';
-  }
-  return html+'</div>';
-}
+    # ── 並行模式：輸出 JSON，由 tw_merge_results.py 處理後續 ──────
+    if parallel_mode:
+        out_path = args.output or f"tw_chunk_{args.chunk}_results.json"
 
-function buildVcpPanel(ticker){
-  var vcp=vcpData[ticker];
-  if(!vcp||vcp.status==='insufficient'||vcp.status==='error') return '';
-  var stage=vcp.stage,isBuy=stage===5;
-  var sNames=['未確認','大跌段','小跌段','更小跌','橫盤整理','突破!'];
-  var sCols=['var(--muted)','var(--red)','var(--amber)','var(--amber)','#00d4b0','var(--green)'];
-  var sc=sCols[Math.min(stage,5)];
-  var html='';
-  if(isBuy){
-    html+='<div class="vcp-buy-banner">'
-      +'<div class="vcp-buy-banner-icon">🎯</div>'
-      +'<div class="vcp-buy-banner-body">'
-      +'<div class="vcp-buy-banner-title">VCP 完整型態 — 建議買進</div>'
-      +'<div class="vcp-buy-banner-sub">'
-      +'突破前高 NT$'+vcp.rHi.toFixed(1)+'  ·  量能 '+vcp.volR.toFixed(1)+'x 均量 ✅<br>'
-      +'進場區間：<strong style="color:var(--amber)">NT$'+vcp.buyLow.toFixed(1)+' – NT$'+vcp.buyHigh.toFixed(1)+'</strong>'
-      +'</div></div>'
-      +'<span class="vcp-buy-badge-lg">🎯 買進</span>'
-      +'</div>';
-  }
-  html+='<div class="vcp-panel">';
-  html+='<div class="vcp-panel-title">🔬 VCP 型態 <span style="color:'+sc+'">'+sNames[Math.min(stage,5)]+'</span></div>';
-  html+='<div class="vcp-dgrid">';
-  html+=vdcc('Q1 大跌',vcp.q1.toFixed(1)+'%',vcp.q1>=12?'var(--grn2)':'var(--muted)');
-  html+=vdcc('Q2 小跌',vcp.q2.toFixed(1)+'%',(vcp.q2<vcp.q1&&vcp.q2>=5)?'var(--grn2)':'var(--muted)');
-  html+=vdcc('Q3 更小跌',vcp.q3.toFixed(1)+'%',(vcp.q3<vcp.q2&&vcp.q3>=2)?'var(--grn2)':'var(--muted)');
-  html+=vdcc('橫盤10根',vcp.t10.toFixed(1)+'%',vcp.t10<=4.5?'var(--grn2)':'var(--muted)');
-  html+=vdcc('量能比',vcp.volR.toFixed(2)+'x',vcp.volR>=1.5?'var(--green)':'var(--muted)');
-  html+=vdcc('突破前高',vcp.isBrk?'✅ 是':'❌ 否',vcp.isBrk?'var(--green)':'var(--muted)');
-  html+='</div>';
-  var drops=[vcp.q1,vcp.q2,vcp.q3,vcp.q4],mx=Math.max.apply(null,drops)||1;
-  var cols=['var(--red)','var(--amber)','var(--amber)','#00d4b0'];
-  html+='<div class="vcp-cbar"><span class="vcp-clbl">收縮：</span>';
-  for(var i=0;i<4;i++){
-    var w=Math.round(drops[i]/mx*72);
-    html+='<div class="vcp-cseg" style="width:'+w+'px;background:'+cols[i]+'" title="Q'+(i+1)+' '+drops[i].toFixed(1)+'%"></div>';
-    if(i<3) html+='<span class="vcp-clbl">›</span>';
-  }
-  html+='</div>';
-  var rat=isBuy
-    ?'🎯 完整VCP：'+vcp.q1.toFixed(1)+'%→'+vcp.q2.toFixed(1)+'%→'+vcp.q3.toFixed(1)+'%\n量能 '+vcp.volR.toFixed(1)+'x ✅  進場 NT$'+vcp.buyLow.toFixed(1)+' – NT$'+vcp.buyHigh.toFixed(1)+'\n超過 NT$'+vcp.buyHigh.toFixed(1)+' 不追'
-    :stage===4
-      ?'⏳ 等待突破 NT$'+vcp.rHi.toFixed(1)+' 且量能≥1.5x（目前 '+vcp.volR.toFixed(1)+'x）'
-      :stage>=2
-        ?'📉 收縮發展中（'+vcp.status+'）繼續觀察'
-        :'⚪ VCP 型態尚未形成，繼續監控';
-  html+='<div class="vcp-rat">'+rat.replace(/\n/g,'<br>')+'</div>';
-  html+='</div>';
-  return html;
-}
-function vdcc(l,v,c){
-  return '<div class="vcp-dc"><div class="vcp-dc-lbl">'+l+'</div><div class="vcp-dc-val" style="color:'+c+'">'+v+'</div></div>';
-}
+        # breadth 含 DataFrame 物件需要 default=str 序列化
+        breadth_serializable = {}
+        for k, v in breadth.items():
+            if isinstance(v, tuple):
+                breadth_serializable[k] = list(v)
+            elif isinstance(v, dict):
+                breadth_serializable[k] = {
+                    kk: (list(vv) if isinstance(vv, tuple) else vv)
+                    for kk, vv in v.items()
+                }
+            else:
+                breadth_serializable[k] = v
 
-// ── SEPA Analysis ─────────────────────────────────
-function buildAnalysis(g, pd){
-  var cur=pd.price;
-  var pp=(cur-g.avgEntry)/g.avgEntry*100;
-  var sg=(cur-g.avgStop)/cur*100;
-  var ml=(g.avgEntry-g.avgStop)*g.totalShares;
-  var rv=ml>0?(cur-g.avgEntry)*g.totalShares/ml:0;
-  var days=Math.round((Date.now()-new Date(g.firstDate).getTime())/86400000);
-  var rangePos=(pd.high>pd.low)?Math.round((cur-pd.low)/(pd.high-pd.low)*100):50;
-  var sig,sigCls,rationale;
-  if(cur<=g.avgStop||pp<-10){sig='🔴 立即出場';sigCls='exit';rationale='現價 NT$'+f2(cur,1)+' 已觸及加權停損 NT$'+f2(g.avgStop,1)+'。依 Minervini 紀律立即出場，保護本金優先。';}
-  else if(pp>=40){sig='🏆 超級強勢';sigCls='run';rationale='加權獲利 '+ppct(pp)+'，進入超強勢區。停損提高至近期支撐，讓利潤繼續奔跑。';}
-  else if(pp>=20){sig='🟡 部分獲利';sigCls='trim';rationale='加權獲利 '+ppct(pp)+'，達 Minervini +20% 目標。出售 ⅓ 鎖利，停損移至成本+2%。';}
-  else if(pp>=5&&sg>=3){sig='🟢 趨勢持有';sigCls='hold';rationale='持倉健康，加權獲利 '+ppct(pp)+'，距停損 '+f2(sg,1)+'%。趨勢完好，繼續持有。';}
-  else if(pp>=-2&&pp<5&&sg>=4){sig='🔵 可加碼';sigCls='add';rationale='接近進場點，距停損 '+f2(sg,1)+'%。VCP突破+量能≥1.5x 可加碼，確認大盤方向。';}
-  else if(pp<0&&cur>g.avgStop){sig='⚪ 觀察中';sigCls='watch';rationale='小幅虧損（'+ppct(pp)+'），在停損上方 '+f2(sg,1)+'%。若繼續走弱準備出場。';}
-  else{sig='🟢 正常持有';sigCls='hold';rationale='持倉正常，繼續追蹤技術面發展。';}
-  return {sig:sig,sigCls:sigCls,rationale:rationale,rv:rv,ml:ml,days:days,sg:sg,pp:pp,rangePos:rangePos};
-}
+        payload = {
+            "chunk":         args.chunk,
+            "today":         today,
+            "scan_mode":     scan_mode,
+            "mode_label":    mode_label,
+            "dl_time":       dl_time,
+            "breadth":       breadth_serializable,
+            "spy_trend":     spy_trend,
+            "spy_detail":    spy_detail,
+            "results":       results,
+        }
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, default=str)
+        print(f"\n✅ Chunk {args.chunk} 結果已寫入 {out_path}（{len(results)} 支）")
+        return
 
-// ── Take Profit Plan（台幣版）────────────────────
-function buildTPPlan(g, cur){
-  var entry=g.avgEntry, stop=g.avgStop, shares=g.totalShares, lots=g.totalLots;
-  var maxLoss=Math.round((entry-stop)*shares);
-  if(maxLoss<=0) return '';
-  var pp=cur?(cur-entry)/entry*100:0;
-  var tiers=[
-    {num:'T1',pct:.20,sh:Math.ceil(lots/3),label:'第一止盈',col:'var(--amber)',cls:'t1',action:'出 ⅓，停損移至成本+2%'},
-    {num:'T2',pct:.40,sh:Math.ceil(lots/3),label:'中段獲利',col:'var(--grn2)',cls:'t2',action:'再出 ⅓，停損移至+20%'},
-    {num:'T3',pct:.60,sh:Math.floor(lots/3),label:'主力目標',col:'var(--green)',cls:'t3',action:'剩餘出場或跟進停損'},
-    {num:'T4',pct:1.00,sh:lots,label:'超級績效',col:'var(--purp)',cls:'t4',action:'強勢特例，緊跟支撐'},
-  ];
-  var html='<div class="tp-plan"><div class="tp-plan-title">🎯 止盈計劃（張數）</div><div class="tp-rows">';
-  var nextTier=null;
-  tiers.forEach(function(t){
-    var tgt=Math.round(entry*(1+t.pct)*10)/10;
-    var profit=Math.round(t.sh*1000*(tgt-entry));
-    var rr=maxLoss>0?(profit/maxLoss).toFixed(1):'—';
-    var rrNum=parseFloat(rr);
-    var rrCol=rrNum>=3?'var(--green)':rrNum>=2?'var(--grn2)':rrNum>=1?'var(--amber)':'var(--red)';
-    var reached=cur&&cur>=tgt;
-    var isActive=cur&&pp>=(t.pct-.08)*100&&pp<(t.pct+.15)*100;
-    if(!nextTier&&cur&&!reached) nextTier={label:t.num,price:tgt,dist:tgt-cur,distPct:((tgt-cur)/cur*100).toFixed(1)};
-    var rowCls='tp-row '+t.cls+(reached?' tp-hit':'')+(isActive?' tp-active':'');
-    html+='<div class="'+rowCls+'">'
-      +'<div class="tp-num" style="color:'+t.col+'">'+t.num+'</div>'
-      +'<div class="tp-lbl"><strong style="color:'+t.col+'">+'+(t.pct*100).toFixed(0)+'%</strong> '+t.label+'</div>'
-      +'<div class="tp-price">NT$'+tgt.toFixed(1)+'</div>'
-      +'<div class="tp-pnl">+NT$'+(profit/10000).toFixed(1)+'萬</div>'
-      +'<div class="tp-rr" style="color:'+rrCol+'">'+rr+':1</div>'
-      +'</div>'
-      +'<div class="tp-sub">↳ '+t.action+'（'+(t.sh)+'張）</div>';
-  });
-  html+='</div>';
-  if(nextTier){
-    html+='<div class="tp-next">📍 距 '+nextTier.label+' <strong>NT$'+nextTier.price.toFixed(1)+'</strong>'
-      +' 還差 <strong>NT$'+nextTier.dist.toFixed(1)+' (+'+nextTier.distPct+'%)</strong></div>';
-  } else if(cur){
-    html+='<div class="tp-next">🏆 已超越 T3，停損緊跟支撐，讓利潤繼續跑</div>';
-  }
-  var s1=Math.round(entry*1.02*10)/10;
-  var s2=Math.round(entry*1.20*10)/10;
-  var s3=Math.round(entry*1.40*10)/10;
-  html+='<div class="tp-stopmove">'
-    +'<strong style="color:var(--blue)">📌 停損移動：</strong>'
-    +' 進場 <strong style="color:var(--red)">NT$'+f2(stop,1)+'</strong>'
-    +' → T1後 <strong style="color:var(--amber)">NT$'+s1.toFixed(1)+'</strong>'
-    +' → T2後 <strong style="color:var(--grn2)">NT$'+s2.toFixed(1)+'</strong>'
-    +' → T3後 <strong style="color:var(--green)">NT$'+s3.toFixed(1)+'</strong>'
-    +'</div>';
+    # ── 單機模式：完整流程 ────────────────────────────────────────
+    results.sort(key=lambda x: -x["total"])
+    strong_idx, watch_idx, buy_idx = classify(results)
+    nb, ns, nw = len(buy_idx), len(strong_idx), len(watch_idx)
 
-  // Quick action buttons
-  var phase=tpPhase[g.ticker]||0;
-  var actions=[
-    {label:'T1 出 ⅓',sub:'出 '+Math.ceil(lots/3)+'張\n停損→成本+2%',cls:'t1-btn',phase:1},
-    {label:'T2 再出 ⅓',sub:'再出 '+Math.ceil(lots/3)+'張\n停損→+20%',cls:'t2-btn',phase:2},
-    {label:'T3 清倉',sub:'出清 '+lots+'張\n完成交易',cls:'t3-btn',phase:3},
-  ];
-  html+='<div class="tp-actions">';
-  actions.forEach(function(a){
-    var isDone=phase>=a.phase;
-    var isNext=phase===a.phase-1;
-    var btnCls='tp-act-btn '+(isDone?'done-btn':a.cls);
-    var icon=isDone?'✅':(isNext?'👉':'○');
-    html+='<button type="button" class="'+btnCls+'" '
-      +(isDone?'':'data-tp-action="'+a.phase+'" data-ticker="'+g.ticker+'"')+'>'
-      +'<span class="tp-act-badge">'+icon+'</span>'
-      +'<span style="font-size:11px">'+a.label+'</span>'
-      +'<span class="tp-act-lbl">'+a.sub.replace(/\n/g,'<br>')+'</span>'
-      +'</button>';
-  });
-  html+='</div>';
-  if(phase>0){
-    var phaseNames=['','T1 已出 ⅓','T2 已出 ⅔','T3 已清倉'];
-    html+='<div class="tp-progress">';
-    for(var pi=1;pi<=3;pi++){
-      html+='<span class="tp-progress-dot '+(phase>=pi?'tp-done':'tp-pending')+'"></span>';
-      html+='<span style="color:'+(phase>=pi?'var(--green)':'var(--muted)')+'">'+['T1','T2','T3'][pi-1]+'</span>';
-      if(pi<3) html+='<span style="color:var(--dim)">›</span>';
-    }
-    html+='<span style="margin-left:4px;color:var(--text)">'+phaseNames[phase]+'</span>';
-    html+='</div>';
-  }
-  html+='</div>';
-  return html;
-}
+    print(f"\n{'='*60}")
+    print(f"  ✅ 掃描完成：{len(results)} 支有效")
+    print(f"  🔥 強力買進 {nb} ｜ 🚀 強力候選 {ns} ｜ ⚡ 觀察 {nw}")
+    print(f"{'='*60}\n")
 
-// ── Render ────────────────────────────────────────
-function renderAll(){ renderStats(); renderPositions(); }
+    args_html = (results, strong_idx, watch_idx, buy_idx,
+                 today, len(results), spy_trend, spy_detail, breadth, dl_time, mode_label)
+    body    = make_email_body(*args_html)
+    iphone  = make_iphone_html(*args_html)
+    desktop = make_desktop_html(*args_html)
 
-function renderStats(){
-  var groups=getGroups(),tv=0,tc=0,ml=0,n=groups.length;
-  groups.forEach(function(g){
-    var pd=prices[g.ticker],c=pd?pd.price:g.avgEntry;
-    tv+=c*g.totalShares; tc+=g.totalCost; ml+=(g.avgEntry-g.avgStop)*g.totalShares;
-  });
-  var pnl=tv-tc,dep=cfg.capital>0?tc/cfg.capital*100:0;
-  var pe=document.getElementById('s-pnl');
-  pe.textContent=n?twd(pnl):'—'; pe.style.color=n?pcol(pnl):'var(--muted)';
-  document.getElementById('s-val').textContent=n?twd(tv):'—';
-  document.getElementById('s-dep').textContent=n?f2(dep,0)+'%':'—';
-  document.getElementById('s-loss').textContent=n?twd(-ml):'—';
-  document.getElementById('hdr-sub').textContent='Minervini · NT$'+Number(cfg.capital).toLocaleString()+' · '+n+' 支股票';
-}
+    tag = "open" if args.mode == "open" else "close"
+    with open(f"tw_sepa_{today}_{tag}_iphone.html",  "w", encoding="utf-8") as f: f.write(iphone)
+    with open(f"tw_sepa_{today}_{tag}_desktop.html", "w", encoding="utf-8") as f: f.write(desktop)
+    print("💾 已儲存 iPhone 版 + 電腦版")
 
-function renderPositions(){
-  var wrap=document.getElementById('pos-wrap'),emp=document.getElementById('empty');
-  var groups=getGroups();
-  if(!groups.length){ emp.style.display='block'; wrap.querySelectorAll('.pos-card').forEach(function(c){c.remove();}); return; }
-  emp.style.display='none';
-  var tickers=groups.map(function(g){return g.ticker;});
-  wrap.querySelectorAll('.pos-card').forEach(function(el){ if(tickers.indexOf(el.getAttribute('data-ticker'))<0) el.remove(); });
-  groups.forEach(function(g,idx){
-    var card=wrap.querySelector('.pos-card[data-ticker="'+g.ticker+'"]');
-    if(!card){ card=document.createElement('div'); card.className='pos-card'; card.setAttribute('data-ticker',g.ticker); wrap.appendChild(card); }
-    renderCard(card,g);
-  });
-}
+    if args.email:
+        send_email(body, iphone, desktop, today, nb, ns, nw, mode_label)
 
-function renderCard(card, g){
-  var pd=prices[g.ticker],cur=pd?pd.price:null;
-  var pu=cur?(cur-g.avgEntry)*g.totalShares:null;
-  var pp=cur?(cur-g.avgEntry)/g.avgEntry*100:null;
-  var pv=cur?cur*g.totalShares:g.totalCost;
-  var sg=cur?(cur-g.avgStop)/cur*100:null;
-  var ie=expanded===g.ticker;
-  var nlots=g.lots.length;
-  var disp=displayTicker(g.ticker);
-
-  var bkey='watch',bicon='⏳',blabel='載入報價中…';
-  if(cur){
-    var p2=pp||0,s2=sg||0;
-    if(cur<=g.avgStop||p2<-10){bkey='exit';bicon='🔴';blabel='立即出場';}
-    else if(p2>=40){bkey='run';bicon='🏆';blabel='讓利潤奔跑';}
-    else if(p2>=20){bkey='trim';bicon='🟡';blabel='出 ⅓ + 移停損';}
-    else if(p2>=5&&s2>=3){bkey='hold';bicon='🟢';blabel='持有';}
-    else if(p2>=-2&&p2<5&&s2>=4){bkey='add';bicon='🔵';blabel='可考慮加碼';}
-    else if(p2<0&&cur>g.avgStop){bkey='watch';bicon='⚪';blabel='觀察中';}
-    else{bkey='hold';bicon='🟢';blabel='持有';}
-  }
-
-  var bw=0,bc='var(--muted)';
-  if(pp!==null){if(pp>=0){bw=Math.min(100,pp/50*100);bc=pp>=40?'var(--purp)':pp>=20?'var(--green)':'var(--grn2)';}else{bw=Math.min(100,Math.abs(pp)/10*100);bc='var(--red)';}}
-  card.className='pos-card sig-'+bkey+(ie?' expanded':'');
-  var c1col=pd?(pd.change1d>=0?'var(--green)':'var(--red)'):'var(--muted)';
-  var c1str=pd?(pd.change1d>=0?'+':'')+f2(pd.change1d,2)+'%':'—';
-  var curStr=cur?'NT$'+f2(cur,1):'<span class="shimmer" style="width:60px;height:14px">&nbsp;</span>';
-  var pnlHtml=pu!==null
-    ?'<span class="pos-pnl-twd" style="color:'+pcol(pu)+'">'+twd(pu)+'</span><span class="pos-pnl-pct" style="color:'+pcol(pp||0)+'"> '+ppct(pp||0)+'</span>'
-    :'<span class="shimmer" style="width:110px;height:17px">&nbsp;</span>';
-
-  // Expanded detail
-  var detailHtml='';
-  if(ie){
-    var lotsHtml='<div class="lots-section">'
-      +'<div class="lots-title">📦 '+nlots+' 筆交易（均價 NT$'+f2(g.avgEntry,1)+'）</div>';
-    g.lots.forEach(function(lot){
-      var lotPnl=cur?(cur-lot.entry)*(lot.lots||0)*1000:null;
-      var lotPnlPct=cur?(cur-lot.entry)/lot.entry*100:null;
-      lotsHtml+='<div class="lot-row">'
-        +'<span class="lot-date">'+lot.date+'</span>'
-        +'<span class="lot-val">'+(lot.lots||0)+'張 @NT$'+f2(lot.entry,1)+'</span>'
-        +'<span class="lot-val" style="color:var(--red)">停NT$'+f2(lot.stop,1)+'</span>'
-        +'<span class="lot-pnl" style="color:'+(lotPnl!==null?pcol(lotPnl):'var(--muted)')+'">'+
-          (lotPnl!==null?twd(lotPnl)+'<br><span style="font-size:9px">'+ppct(lotPnlPct||0)+'</span>':'—')+'</span>'
-        +'<button type="button" class="lot-del" data-lot-id="'+lot.id+'" data-ticker="'+g.ticker+'">✕</button>'
-        +'</div>';
-    });
-    lotsHtml+='</div>';
-
-    if(cur&&pd){
-      var a=buildAnalysis(g,pd);
-      detailHtml=buildVcpPanel(g.ticker)+buildTPPlan(g,cur)+lotsHtml
-        +'<div class="detail-grid">'
-        +dcc('合計市值',twd(pv),'var(--text)')+dcc('加權成本',twd(g.totalCost),'var(--muted)')
-        +dcc('總損益',twd(pu||0),pcol(pu||0))
-        +dcc('最大虧損',twd(-a.ml),'var(--red)')+dcc('距均停損',f2(a.sg,1)+'%',a.sg<3?'var(--amber)':'var(--text)')
-        +dcc('持倉天數',a.days+'天','var(--text)')
-        +'</div>'
-        +'<div class="analysis-box">'
-        +'<div class="analysis-title">⚡ SEPA 分析</div>'
-        +'<div class="analysis-grid">'
-        +'<div class="analysis-item"><div class="analysis-item-label">訊號</div>'
-        +'<div class="analysis-item-val"><span class="sig-badge '+a.sigCls+'" style="margin-top:0;font-size:11px">'+a.sig+'</span></div></div>'
-        +'<div class="analysis-item"><div class="analysis-item-label">盈虧比</div>'
-        +'<div class="analysis-item-val" style="color:'+(a.rv>=2?'var(--green)':a.rv>=1?'var(--amber)':'var(--red)')+'">1:'+f2(a.rv,1)+'</div></div>'
-        +'<div class="analysis-item"><div class="analysis-item-label">今日高低</div>'
-        +'<div class="analysis-item-val" style="font-size:12px;color:var(--muted)">NT$'+f2(pd.low,1)+' — NT$'+f2(pd.high,1)+'</div></div>'
-        +'<div class="analysis-item"><div class="analysis-item-label">日內位置</div>'
-        +'<div class="analysis-item-val" style="color:'+(a.rangePos>60?'var(--green)':a.rangePos<30?'var(--red)':'var(--amber)')+'">'+a.rangePos+'%</div></div>'
-        +'</div>'
-        +'<div style="margin:8px 0 10px">'
-        +'<div style="font-size:9px;font-family:var(--mono);color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.07em">今日區間位置</div>'
-        +'<div style="position:relative;height:6px;background:var(--bg2);border-radius:6px">'
-        +'<div style="position:absolute;left:0;top:0;height:6px;width:'+a.rangePos+'%;background:linear-gradient(90deg,var(--blue),var(--green));border-radius:6px;transition:width .5s"></div>'
-        +'<div style="position:absolute;top:-4px;left:'+a.rangePos+'%;transform:translateX(-50%);width:14px;height:14px;background:var(--green);border-radius:50%;border:2px solid var(--card)"></div>'
-        +'</div>'
-        +'<div style="display:flex;justify-content:space-between;margin-top:6px;font-family:var(--mono);font-size:9px;color:var(--muted)">'
-        +'<span>低 NT$'+f2(pd.low,1)+'</span><span>現 NT$'+f2(cur,1)+'</span><span>高 NT$'+f2(pd.high,1)+'</span>'
-        +'</div></div>'
-        +'<div class="rationale">'+a.rationale+'</div>'
-        +'</div>';
-    } else {
-      detailHtml=buildVcpPanel(g.ticker)+buildTPPlan(g,null)+lotsHtml+'<div style="padding:10px;font-family:var(--mono);font-size:12px;color:var(--muted)">⏳ 點右上角「更新」載入報價</div>';
-    }
-    if(g.notes) detailHtml+='<div class="pos-notes">📝 '+g.notes+'</div>';
-    detailHtml+='<div class="detail-actions"><button type="button" class="btn-sm danger" data-action="delete-all" data-ticker="'+g.ticker+'">🗑 清除 '+disp+' 所有部位</button></div>';
-  }
-
-  card.innerHTML=(
-    '<div class="pos-main" data-toggle="'+g.ticker+'">'
-    +'<div><div class="pos-ticker">'+disp+'</div>'
-    +(stockNames[g.ticker]?'<div class="pos-name">'+stockNames[g.ticker]+'</div>':'')
-    +'<div class="pos-lots">'+(nlots>1?nlots+' 筆 · ':'')+g.totalLots+'張（'+g.totalShares.toLocaleString()+'股）</div>'
-    +'<div class="sig-badge '+bkey+'">'+bicon+' '+blabel+'</div></div>'
-    +'<div class="pos-middle">'
-    +'<div class="pos-pnl-row">'+pnlHtml+'</div>'
-    +'<div class="pos-bar-track"><div class="pos-bar-fill" style="width:'+bw+'%;background:'+bc+'"></div></div>'
-    +'<div class="pos-meta">'
-    +'<div class="pos-meta-item">均價 <span>NT$'+f2(g.avgEntry,1)+'</span></div>'
-    +'<div class="pos-meta-item">均停 <span style="color:var(--red)">NT$'+f2(g.avgStop,1)+'</span></div>'
-    +'<div class="pos-meta-item" style="color:'+c1col+'">'+c1str+'</div>'
-    +'</div></div>'
-    +'<div class="pos-right">'
-    +'<div class="pos-current" style="color:'+c1col+'">'+curStr+'</div>'
-    +'<div class="pos-entry-small">'+(sg!==null?'距停 '+f2(sg,1)+'%':'—')+'</div>'
-    +'</div></div>'
-    +buildVcpStrip(g.ticker)
-    +'<div class="pos-detail">'+detailHtml+'</div>'
-  );
-}
-
-function dcc(l,v,c){ return '<div class="dc"><div class="dc-lbl">'+l+'</div><div class="dc-val" style="color:'+c+'">'+v+'</div></div>'; }
-
-function saveLots(){ store.set('tw_sepa_positions', lots); }
-function saveTpPhase(){ store.set('tw_sepa_tp_phase', tpPhase); }
-
-// ── TP Execute ────────────────────────────────────
-function executeTpAction(ticker, phase){
-  var group=getGroups().find(function(g){return g.ticker===ticker;});
-  if(!group) return;
-  var entry=group.avgEntry;
-  var disp=displayTicker(ticker);
-  var confirmMsg;
-  if(phase===1){
-    var lotSell=Math.ceil(group.totalLots/3);
-    var newStop=Math.round(entry*1.02*10)/10;
-    confirmMsg='T1 執行：\n出售約 ⅓（'+lotSell+' 張）\n停損移至成本+2%（NT$'+newStop.toFixed(1)+'）\n\n確認執行？';
-  } else if(phase===2){
-    var lotSell=Math.ceil(group.totalLots/3);
-    var newStop=Math.round(entry*1.20*10)/10;
-    confirmMsg='T2 執行：\n再出售約 ⅓（'+lotSell+' 張）\n停損移至+20%（NT$'+newStop.toFixed(1)+'）\n\n確認執行？';
-  } else if(phase===3){
-    confirmMsg='T3 執行：\n出清剩餘全部 '+group.totalLots+' 張\n清除所有 '+disp+' 持倉\n\n確認執行？';
-  }
-  if(!confirm(confirmMsg)) return;
-
-  if(phase===1||phase===2){
-    var target=Math.ceil(group.totalLots/3);
-    var removed=0;
-    var sorted=group.lots.slice().sort(function(a,b){return (a.lots||0)-(b.lots||0);});
-    sorted.forEach(function(lot){
-      if(removed>=target) return;
-      var canTake=Math.min(lot.lots||0, target-removed);
-      if(canTake===(lot.lots||0)){
-        lots=lots.filter(function(l){return l.id!==lot.id;});
-      } else {
-        var idx=lots.findIndex(function(l){return l.id===lot.id;});
-        if(idx>=0) lots[idx].lots-=canTake;
-      }
-      removed+=canTake;
-    });
-    var newStop=phase===1?Math.round(entry*1.02*10)/10:Math.round(entry*1.20*10)/10;
-    lots.forEach(function(l){ if(l.ticker===ticker) l.stop=newStop; });
-    tpPhase[ticker]=phase;
-  } else if(phase===3){
-    lots=lots.filter(function(l){return l.ticker!==ticker;});
-    delete tpPhase[ticker];
-    if(expanded===ticker) expanded=null;
-  }
-  saveLots(); saveTpPhase(); renderAll();
-  if(phase===3){
-    toast('✅ '+disp+' T3 完成，持倉已清除');
-  } else {
-    var newStop=phase===1?Math.round(entry*1.02*10)/10:Math.round(entry*1.20*10)/10;
-    toast('✅ '+disp+' T'+phase+' 完成 · 停損已移至 NT$'+newStop.toFixed(1));
-  }
-}
-
-// ── Refresh ───────────────────────────────────────
-function fullRefresh(){
-  if(loading)return;
-  loading=true;
-  var ic=document.getElementById('ri'),lb=document.getElementById('rl');
-  ic.className='spinning';lb.textContent='更新中';
-  fetchAll(function(){
-    renderAll();
-    fetchVCPAll(function(){
-      loading=false;ic.className='';lb.textContent='更新';
-      renderAll();
-    });
-  });
-}
-
-// ── Stop mode ─────────────────────────────────────
-function setStopMode(mode){
-  stopMode=mode;
-  document.getElementById('tab-price').className='stop-tab'+(mode==='price'?' active':'');
-  document.getElementById('tab-pct').className='stop-tab'+(mode==='pct'?' active':'');
-  document.getElementById('f-stop').placeholder=mode==='pct'?cfg.defStopPct+'%':'792.00';
-  updateStopHint();
-}
-function updateStopHint(){
-  var hint=document.getElementById('stop-hint');
-  var entry=pn('f-entry'),stopVal=pn('f-stop');
-  if(stopMode==='pct'){
-    if(entry&&stopVal){ var sp=entry*(1-stopVal/100); hint.textContent='→ 停損價 NT$'+f2(sp,1)+' （-'+f2(stopVal,1)+'%）'; }
-    else hint.textContent='輸入進場價和停損 % 後自動計算';
-  } else {
-    if(entry&&stopVal){ var p=(entry-stopVal)/entry*100; hint.textContent='→ 虧損 '+f2(p,1)+'% 出場'; }
-    else hint.textContent='';
-  }
-}
-
-// ── Add lot ───────────────────────────────────────
-function addLot(){
-  var raw=(document.getElementById('f-ticker').value||'').trim();
-  var market=document.getElementById('f-market').value||'.TW';
-  var ticker=normalizeTicker(raw, market);
-  var entry=pn('f-entry'),lotsNum=pn('f-lots'),stopRaw=pn('f-stop');
-  var date=document.getElementById('f-date').value, notes=(document.getElementById('f-notes').value||'').trim();
-  if(!raw){ toast('⚠️ 請輸入股票代號'); return; }
-  if(!entry){ toast('⚠️ 請輸入進場價'); return; }
-  if(!lotsNum){ toast('⚠️ 請輸入張數'); return; }
-  if(!stopRaw){ toast('⚠️ 請輸入停損'); return; }
-  var stop;
-  if(stopMode==='pct'){
-    if(stopRaw<=0||stopRaw>=100){ toast('⚠️ 停損 % 需介於 0-100'); return; }
-    stop=parseFloat((entry*(1-stopRaw/100)).toFixed(1));
-  } else {
-    stop=stopRaw;
-    if(stop>=entry){ toast('⚠️ 停損價必須低於進場價'); return; }
-  }
-  var lot={id:uid(),ticker:ticker,entry:entry,lots:lotsNum,stop:stop,
-    date:date||new Date().toISOString().slice(0,10),notes:notes};
-  lots.unshift(lot); saveLots();
-  ['f-ticker','f-entry','f-lots','f-stop','f-notes'].forEach(function(id){ document.getElementById(id).value=''; });
-  document.getElementById('stop-hint').textContent='';
-  expanded=ticker;
-  renderAll();
-  var disp=displayTicker(ticker);
-  toast('✅ '+disp+' 已加入 · 抓取報價中…');
-  fetchOneTW(ticker).then(function(d){prices[ticker]=d;renderAll();}).catch(function(){});
-  fetchOHLCV(ticker).then(function(ohlcv){vcpData[ticker]=analyseVCP(ohlcv);renderAll();}).catch(function(){});
-}
-
-// ── Events ────────────────────────────────────────
-document.getElementById('pos-wrap').addEventListener('click', function(e){
-  var el=e.target;
-  var lotDel=el.closest('[data-lot-id]');
-  if(lotDel){
-    var lotId=lotDel.getAttribute('data-lot-id');
-    var ticker=lotDel.getAttribute('data-ticker');
-    var lot=lots.find(function(l){return l.id===lotId;});
-    if(!lot)return;
-    lots=lots.filter(function(l){return l.id!==lotId;});
-    saveLots();
-    if(!lots.find(function(l){return l.ticker===ticker;})) expanded=null;
-    renderAll();
-    toast('🗑 已刪除 '+displayTicker(ticker)+' '+lot.date+' 的交易');
-    return;
-  }
-  var btn=el.closest('[data-action]');
-  if(btn){
-    var action=btn.getAttribute('data-action'),ticker=btn.getAttribute('data-ticker');
-    if(action==='delete-all'){
-      lots=lots.filter(function(l){return l.ticker!==ticker;});
-      delete tpPhase[ticker];
-      expanded=null; saveLots(); saveTpPhase(); renderAll();
-      toast('🗑 '+displayTicker(ticker)+' 所有部位已清除');
-    }
-    return;
-  }
-  var tg=el.closest('[data-toggle]');
-  if(tg){ var tid=tg.getAttribute('data-toggle'); expanded=expanded===tid?null:tid; renderPositions(); }
-  var tpBtn=el.closest('[data-tp-action]');
-  if(tpBtn){
-    var phase=parseInt(tpBtn.getAttribute('data-tp-action'));
-    var ticker=tpBtn.getAttribute('data-ticker');
-    executeTpAction(ticker, phase);
-  }
-});
-
-document.getElementById('btn-add').addEventListener('click', addLot);
-document.getElementById('btn-refresh').addEventListener('click', fullRefresh);
-document.getElementById('tab-price').addEventListener('click', function(){ setStopMode('price'); });
-document.getElementById('tab-pct').addEventListener('click', function(){ setStopMode('pct'); });
-document.getElementById('f-stop').addEventListener('input', updateStopHint);
-document.getElementById('f-entry').addEventListener('input', updateStopHint);
-
-// Navigation
-document.querySelectorAll('.nav-btn').forEach(function(btn){
-  btn.addEventListener('click', function(){
-    var page=btn.getAttribute('data-page');
-    document.querySelectorAll('.nav-btn').forEach(function(b){ b.classList.remove('active'); });
-    document.querySelectorAll('.page').forEach(function(p){ p.classList.remove('active'); });
-    btn.classList.add('active');
-    document.getElementById('page-'+page).classList.add('active');
-    if(page==='settings') loadSettingsForm();
-  });
-});
-
-function loadSettingsForm(){
-  document.getElementById('cfg-capital').value=cfg.capital;
-  document.getElementById('cfg-maxloss').value=cfg.maxLossPct;
-  document.getElementById('cfg-defstop').value=cfg.defStopPct;
-  document.getElementById('cfg-maxpos').value=cfg.maxPosPct;
-  document.getElementById('cfg-token').value=cfg.finmindToken||'';
-}
-document.getElementById('btn-save-settings').addEventListener('click', function(){
-  var cap=pnv(document.getElementById('cfg-capital').value);
-  if(!cap||cap<1000){ toast('⚠️ 本金請輸入有效台幣金額'); return; }
-  cfg.capital  = cap;
-  cfg.maxLossPct= pnv(document.getElementById('cfg-maxloss').value)||2;
-  cfg.defStopPct= pnv(document.getElementById('cfg-defstop').value)||7;
-  cfg.maxPosPct = pnv(document.getElementById('cfg-maxpos').value)||25;
-  var tk=(document.getElementById('cfg-token').value||'').trim();
-  if(tk) cfg.finmindToken=tk;
-  saveCfg(); renderStats();
-  if(stopMode==='pct') document.getElementById('f-stop').placeholder=cfg.defStopPct+'%';
-  toast('✅ 設定已儲存！'+(tk?'FinMind Token 已更新 · ':'')+'本金 NT$'+Number(cfg.capital).toLocaleString());
-});
-document.getElementById('btn-clear-all').addEventListener('click', function(){
-  if(!confirm('確定要清除所有台股持倉嗎？此操作無法復原。')) return;
-  lots=[]; expanded=null; saveLots(); renderAll();
-  toast('🗑 所有持倉已清除');
-});
-
-// Export
-document.getElementById('btn-export').addEventListener('click', function(){
-  document.getElementById('modal-json').textContent=JSON.stringify(lots,null,2);
-  document.getElementById('modal').classList.add('show');
-});
-document.getElementById('btn-mclose').addEventListener('click', function(){ document.getElementById('modal').classList.remove('show'); });
-document.getElementById('modal').addEventListener('click', function(e){ if(e.target===this) this.classList.remove('show'); });
-document.getElementById('btn-copy').addEventListener('click', function(){
-  var json=document.getElementById('modal-json').textContent;
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(json).then(function(){ toast('✅ 已複製到剪貼板！'); });
-  } else {
-    var ta=document.createElement('textarea'); ta.value=json; ta.style.cssText='position:fixed;opacity:0';
-    document.body.appendChild(ta); ta.focus(); ta.select();
-    try{ document.execCommand('copy'); toast('✅ 已複製！'); }catch(e){ toast('⚠️ 請手動長按複製'); }
-    document.body.removeChild(ta);
-  }
-});
-
-// ── Init ──────────────────────────────────────────
-document.getElementById('f-date').value=new Date().toISOString().slice(0,10);
-setStopMode('pct');
-if(lots.length){ renderAll(); fullRefresh(); }
-else{ renderAll(); }
-// 台股開盤期間每5分鐘刷新
-setInterval(function(){
-  var dot=document.getElementById('mkt-dot');
-  if(dot.classList.contains('open')||dot.classList.contains('pre')) fullRefresh();
-}, 5*60*1000);
-
-}());
-</script>
-</body>
-</html>
+if __name__ == "__main__":
+    main()
