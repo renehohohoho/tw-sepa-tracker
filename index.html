@@ -1070,15 +1070,27 @@ function _fetchOHLCV_yahoo(ticker){
   var from= to - 365*24*3600;
   var sym = encodeURIComponent(ticker);
   var qs  = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
+  var directUrl = 'https://query2.finance.yahoo.com/v8/finance/chart/'+sym+qs;
 
   function attempt(base){
-    return fetch(base+sym+qs, {cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
-      .then(function(d){ return parseYahooOHLCV(d); });
+    return withTimeout(
+      fetch(base+sym+qs, {cache:'no-store'})
+        .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+        .then(function(d){ return parseYahooOHLCV(d); }),
+      10000
+    );
   }
 
   return attempt('https://query2.finance.yahoo.com/v8/finance/chart/')
-    .catch(function(){ return attempt('https://query1.finance.yahoo.com/v8/finance/chart/'); });
+    .catch(function(){ return attempt('https://query1.finance.yahoo.com/v8/finance/chart/'); })
+    .catch(function(){
+      return withTimeout(
+        fetch('https://corsproxy.io/?'+encodeURIComponent(directUrl), {cache:'no-store'})
+          .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+          .then(function(d){ return parseYahooOHLCV(d); }),
+        15000
+      );
+    });
 }
 
 function fetchVCPAll(cb){
