@@ -651,12 +651,18 @@ function saveCfg(){ store.set('tw_sepa_cfg', cfg); }
 var lots = store.get('tw_sepa_positions') || [];
 var prices = {};
 var vcpData = {};
+var vcpCache = store.get('tw_sepa_vcp_cache') || {};
 var stockNames = store.get('tw_sepa_names') || {};
 var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
+var vcpLoading = false;
 var stopMode = 'pct';
 window.tradeLog = store.get('tw_sepa_trade_log') || [];
+
+Object.keys(vcpCache).forEach(function(ticker){
+  if(vcpCache[ticker] && vcpCache[ticker].data) vcpData[ticker] = vcpCache[ticker].data;
+});
 
 // ── 大盤狀態（台灣加權指數 MA200）──────────────────
 var marketState = { twAbove200: null, twPrice: null, twMA200: null, lastCheck: 0 };
@@ -691,7 +697,7 @@ function fetchMarketState(cb){
         .then(function(r){ return r.json(); })
         .then(parse);
     })
-    .catch(function(){ marketState.twAbove200 = true; })
+    .catch(function(){ marketState.twAbove200 = true; marketState.lastCheck = Date.now(); })
     .finally(function(){ cb && cb(); });
 }
 
@@ -714,6 +720,27 @@ function twd(n){
 }
 function pcol(n){ return n>=0?'var(--green)':'var(--red)'; }
 function ppct(n){ return (n>=0?'+':'')+Number(n).toFixed(1)+'%'; }
+
+function runLimited(items, limit, worker, cb){
+  var idx=0, active=0, done=0, total=items.length;
+  if(!total){ cb&&cb(); return; }
+  function pump(){
+    while(active<limit && idx<total){
+      (function(item){
+        active++;
+        Promise.resolve()
+          .then(function(){ return worker(item); })
+          .catch(function(){})
+          .finally(function(){
+            active--; done++;
+            if(done===total) cb&&cb();
+            else pump();
+          });
+      })(items[idx++]);
+    }
+  }
+  pump();
+}
 
 function toast(msg){
   var t=document.getElementById('toast');
@@ -862,20 +889,12 @@ function _fetchOneTW_yahoo(ticker){
 function fetchAll(cb){
   var groups=getGroups();
   if(!groups.length){ cb&&cb(); return; }
-  var done=0;
-  groups.forEach(function(g,i){
-    setTimeout(function(){
-      fetchOneTW(g.ticker)
-        .then(function(d){ prices[g.ticker]=d; })
-        .catch(function(){})
-        .finally(function(){
-          done++;
-          if(done===groups.length){
-            document.getElementById('last-upd').textContent='最後更新 '+new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'});
-            cb&&cb();
-          }
-        });
-    }, i*200);
+  runLimited(groups, 6, function(g){
+    return fetchOneTW(g.ticker)
+      .then(function(d){ prices[g.ticker]=d; });
+  }, function(){
+    document.getElementById('last-upd').textContent='最後更新 '+new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'});
+    cb&&cb();
   });
 }
 
@@ -995,15 +1014,28 @@ function _fetchOHLCV_yahoo(ticker){
 function fetchVCPAll(cb){
   var groups=getGroups();
   if(!groups.length){cb&&cb();return;}
-  var done=0;
-  groups.forEach(function(g,i){
-    setTimeout(function(){
-      fetchOHLCV(g.ticker)
-        .then(function(ohlcv){vcpData[g.ticker]=analyseVCP(ohlcv);})
-        .catch(function(){vcpData[g.ticker]={stage:0,status:'error'};})
-        .finally(function(){done++;if(done===groups.length){cb&&cb();}});
-    },i*250);
+  var freshMs=6*60*60*1000;
+  var now=Date.now();
+  var pending=groups.filter(function(g){
+    var cached=vcpCache[g.ticker];
+    if(cached && cached.data && now-cached.ts<freshMs){
+      vcpData[g.ticker]=cached.data;
+      return false;
+    }
+    return true;
   });
+  if(!pending.length){cb&&cb();return;}
+  runLimited(pending, 3, function(g){
+    return fetchOHLCV(g.ticker)
+      .then(function(ohlcv){
+        vcpData[g.ticker]=analyseVCP(ohlcv);
+        vcpCache[g.ticker]={ts:Date.now(),data:vcpData[g.ticker]};
+        store.set('tw_sepa_vcp_cache',vcpCache);
+      })
+      .catch(function(){
+        vcpData[g.ticker]={stage:0,status:'error'};
+      });
+  }, function(){cb&&cb();});
 }
 
 // ── VCP HTML ──────────────────────────────────────
@@ -1779,14 +1811,20 @@ function fullRefresh(){
   if(loading)return;
   loading=true;
   var ic=document.getElementById('ri'),lb=document.getElementById('rl');
+  function finishPriceRefresh(){
+    loading=false;ic.className='';lb.textContent='更新';
+    if(vcpLoading) return;
+    vcpLoading=true;
+    fetchVCPAll(function(){
+      vcpLoading=false;
+      renderAll();
+    });
+  }
   ic.className='spinning';lb.textContent='更新中';
   fetchMarketState(function(){
     fetchAll(function(){
       renderAll();
-      fetchVCPAll(function(){
-        loading=false;ic.className='';lb.textContent='更新';
-        renderAll();
-      });
+      finishPriceRefresh();
     });
   });
 }
