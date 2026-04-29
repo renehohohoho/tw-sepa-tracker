@@ -20,7 +20,7 @@
   --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html{height:-webkit-fill-available}
+html{height:-webkit-fill-available;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);
   min-height:100vh;min-height:-webkit-fill-available;
   overflow-x:hidden;-webkit-font-smoothing:antialiased;
@@ -128,7 +128,7 @@ input[type="number"]{appearance:textfield}
 .pos-card.sig-add{border-color:#4d9fff55}
 .pos-main{display:flex;align-items:flex-start;gap:10px;padding:14px 14px 0;cursor:pointer;user-select:none}
 .pos-ticker{font-size:17px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
-.pos-name{font-size:10px;color:var(--muted);font-family:var(--sans);margin-top:1px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.pos-name{font-size:12px;color:var(--text);font-family:var(--sans);margin-top:2px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .pos-lots{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
 .pos-middle{flex:1;min-width:0}
 .pos-pnl-row{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
@@ -139,8 +139,9 @@ input[type="number"]{appearance:textfield}
 .pos-meta{display:flex;gap:12px;flex-wrap:wrap}
 .pos-meta-item{font-family:var(--mono);font-size:10px;color:var(--muted)}
 .pos-meta-item span{color:var(--text)}
-.pos-right{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
-.pos-current{font-size:16px;font-weight:600;font-family:var(--mono)}
+.pos-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.pos-chg{font-size:11px;font-family:var(--mono)}
+.pos-current{font-size:16px;font-weight:700;font-family:var(--mono)}
 .pos-entry-small{font-size:10px;font-family:var(--mono);color:var(--muted)}
 
 /* ── SIGNAL BADGE ────────────────────────────────── */
@@ -190,7 +191,7 @@ input[type="number"]{appearance:textfield}
 
 /* ── DETAIL GRID ─────────────────────────────────── */
 .detail-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
-@media(max-width:360px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:430px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
 .dc{background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px}
 .dc-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
 .dc-val{font-family:var(--mono);font-size:13px;font-weight:500}
@@ -653,6 +654,8 @@ var prices = {};
 var vcpData = {};
 var vcpCache = store.get('tw_sepa_vcp_cache') || {};
 var stockNames = store.get('tw_sepa_names') || {};
+var zhNames   = store.get('tw_sepa_zh_names') || {};
+var zhNamesTs = store.get('tw_sepa_zh_names_ts') || 0;
 var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
@@ -719,6 +722,37 @@ function pcol(n){ return n>=0?'var(--green)':'var(--red)'; }
 function ppct(n){ return (n>=0?'+':'')+Number(n).toFixed(1)+'%'; }
 function withTimeout(p, ms){
   return Promise.race([p, new Promise(function(_,rej){ setTimeout(function(){ rej(new Error('timeout')); }, ms); })]);
+}
+
+// ── 台股中文名稱（TWSE + TPEX 公開 API）──────────────
+function fetchZhNames(cb){
+  if(Object.keys(zhNames).length > 0 && Date.now() - zhNamesTs < 12*3600*1000){
+    cb && cb(); return;
+  }
+  var pending = 2;
+  function done(){
+    if(--pending === 0){
+      store.set('tw_sepa_zh_names', zhNames);
+      store.set('tw_sepa_zh_names_ts', Date.now());
+      cb && cb();
+    }
+  }
+  function parseArr(arr){
+    arr.forEach(function(s){
+      var code = s.Code || s['代號'] || s.code || '';
+      var name = s.Name || s['名稱'] || s.name || '';
+      if(code && name) zhNames[code] = name;
+    });
+  }
+  withTimeout(fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',{cache:'no-store'}),10000)
+    .then(function(r){ return r.json(); }).then(parseArr).catch(function(){}).finally(done);
+  withTimeout(fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',{cache:'no-store'}),10000)
+    .then(function(r){ return r.json(); }).then(parseArr).catch(function(){}).finally(done);
+}
+
+function getStockName(ticker){
+  var sid = ticker.replace(/\.(TW|TWO)$/i, '');
+  return zhNames[sid] || stockNames[ticker] || '';
 }
 
 function runLimited(items, limit, worker, cb){
@@ -1559,7 +1593,7 @@ function renderCard(card, g){
   card.innerHTML=(
     '<div class="pos-main" data-toggle="'+tickerAttr+'">'
     +'<div><div class="pos-ticker">'+esc(disp)+'</div>'
-    +(stockNames[g.ticker]?'<div class="pos-name">'+esc(stockNames[g.ticker])+'</div>':'')
+    +(getStockName(g.ticker)?'<div class="pos-name">'+esc(getStockName(g.ticker))+'</div>':'')
     +'<div class="pos-lots">'+(nlots>1?nlots+' 筆 · ':'')+g.totalLots+'張（'+g.totalShares.toLocaleString()+'股）</div>'
     +phTag
     +'<div class="sig-badge '+bkey+'">'+bicon+' '+blabel+'</div></div>'
@@ -1569,9 +1603,9 @@ function renderCard(card, g){
     +'<div class="pos-meta">'
     +'<div class="pos-meta-item">均價 <span>NT$'+f2(g.avgEntry,1)+'</span></div>'
     +'<div class="pos-meta-item">均停 <span style="color:var(--red)">NT$'+f2(g.avgStop,1)+'</span></div>'
-    +'<div class="pos-meta-item" style="color:'+c1col+'">'+c1str+'</div>'
     +'</div></div>'
     +'<div class="pos-right">'
+    +'<div class="pos-chg" style="color:'+c1col+'">'+c1str+'</div>'
     +'<div class="pos-current" style="color:'+c1col+'">'+curStr+'</div>'
     +'<div class="pos-entry-small">'+(sg!==null?'距停 '+f2(sg,1)+'%':'—')+'</div>'
     +'</div></div>'
@@ -2164,8 +2198,9 @@ document.getElementById('btn-copy').addEventListener('click', function(){
 // ── Init ──────────────────────────────────────────
 document.getElementById('f-date').value=new Date().toISOString().slice(0,10);
 setStopMode('pct');
-if(lots.length){ renderAll(); fullRefresh(); }
-else{ renderAll(); }
+renderAll();
+fetchZhNames(function(){ renderAll(); });
+if(lots.length) fullRefresh();
 // 台股開盤期間每5分鐘刷新
 setInterval(function(){
   var dot=document.getElementById('mkt-dot');
