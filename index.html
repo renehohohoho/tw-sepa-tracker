@@ -851,37 +851,44 @@ function fetchOneTW(ticker){
 }
 
 function _fetchOneTW_yahoo(ticker){
-  var fields = 'regularMarketPrice,regularMarketPreviousClose,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,currency,longName,shortName';
-  function tryBase(base){
-    return fetch(base+'?symbols='+encodeURIComponent(ticker)+'&fields='+fields, {cache:'no-store'})
+  var to   = Math.floor(Date.now()/1000);
+  var from = to - 10*24*3600;
+  var qs   = '?interval=1d&period1='+from+'&period2='+to+'&includePrePost=false';
+  var sym  = encodeURIComponent(ticker);
+
+  function tryFetch(base){
+    return fetch(base+sym+qs, {cache:'no-store'})
       .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
       .then(function(d){
-        var results=(d&&d.quoteResponse&&d.quoteResponse.result)||[];
-        if(!results.length) throw new Error('no result');
-        var q=results[0];
-        var c=q.regularMarketPrice;
-        if(!c) throw new Error('no price');
-        var pc=q.regularMarketPreviousClose||c;
-        var name=q.longName||q.shortName||'';
-        if(name){ stockNames[ticker]=name; store.set('tw_sepa_names',stockNames); }
+        var res = d&&d.chart&&d.chart.result&&d.chart.result[0];
+        if(!res) throw new Error('no result');
+        var q  = res.indicators&&res.indicators.quote&&res.indicators.quote[0];
+        var closes = q&&q.close||[];
+        var n = closes.length;
+        if(!n) throw new Error('no data');
+        var c  = closes[n-1];
+        var pc = n>1 ? closes[n-2] : c;
+        var meta = res.meta||{};
+        var rawName = meta.longName || meta.shortName || '';
+        if(rawName){ stockNames[ticker]=rawName; store.set('tw_sepa_names',stockNames); }
         return {
-          price:c, prevClose:pc,
-          change1d: pc?(c-pc)/pc*100:0,
-          high: q.regularMarketDayHigh||c,
-          low:  q.regularMarketDayLow||c,
-          open: q.regularMarketOpen||c,
-          currency: q.currency||'TWD'
+          price: c, prevClose: pc,
+          change1d: pc ? (c-pc)/pc*100 : 0,
+          high:  (q.high||[])[n-1]||c,
+          low:   (q.low||[])[n-1]||c,
+          open:  (q.open||[])[n-1]||c,
+          currency: 'TWD'
         };
       });
   }
-  return tryBase('https://query2.finance.yahoo.com/v7/finance/quote')
-    .catch(function(){ return tryBase('https://query1.finance.yahoo.com/v7/finance/quote'); });
+  return tryFetch('https://query2.finance.yahoo.com/v8/finance/chart/')
+    .catch(function(){ return tryFetch('https://query1.finance.yahoo.com/v8/finance/chart/'); });
 }
 
 // ── Yahoo v7 批次即時報價（一次取回所有持倉）────────
 function _fetchBatchYahoo(tickers){
   var fields = 'regularMarketPrice,regularMarketPreviousClose,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,currency,longName,shortName';
-  var syms   = tickers.map(encodeURIComponent).join('%2C');
+  var syms   = tickers.join(',');
   function tryBase(base){
     return fetch(base+'?symbols='+syms+'&fields='+fields, {cache:'no-store'})
       .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
