@@ -744,10 +744,16 @@ function fetchZhNames(cb){
       if(code && name) zhNames[code] = name;
     });
   }
-  withTimeout(fetch('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',{cache:'no-store'}),10000)
-    .then(function(r){ return r.json(); }).then(parseArr).catch(function(){}).finally(done);
-  withTimeout(fetch('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',{cache:'no-store'}),10000)
-    .then(function(r){ return r.json(); }).then(parseArr).catch(function(){}).finally(done);
+  function fetchNameSrc(url){
+    return withTimeout(fetch(url,{cache:'no-store'}),10000)
+      .then(function(r){ return r.json(); }).then(parseArr)
+      .catch(function(){
+        return withTimeout(fetch('https://corsproxy.io/?'+encodeURIComponent(url),{cache:'no-store'}),12000)
+          .then(function(r){ return r.json(); }).then(parseArr).catch(function(){});
+      });
+  }
+  fetchNameSrc('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL').finally(done);
+  fetchNameSrc('https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes').finally(done);
 }
 
 function getStockName(ticker){
