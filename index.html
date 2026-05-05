@@ -660,6 +660,7 @@ var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
 var vcpLoading = false;
+var officialQuoteCache = {ts:0,map:{}};
 var stopMode = 'pct';
 var tradeLog = store.get('tw_sepa_trade_log') || [];
 
@@ -985,6 +986,88 @@ function _fetchBatchYahoo(tickers){
     .catch(function(){ return {}; });
 }
 
+// ── TWSE + TPEX 批次日收報價（主要來源，避免 Yahoo/CORS 慢）──
+function _fetchBatchOfficialTW(tickers){
+  var wanted = {};
+  tickers.forEach(function(t){ wanted[t]=1; });
+  if(Date.now()-officialQuoteCache.ts < 60000){
+    var cached = {}, allCached = true;
+    tickers.forEach(function(t){
+      if(officialQuoteCache.map[t]) cached[t]=officialQuoteCache.map[t];
+      else allCached=false;
+    });
+    if(allCached) return Promise.resolve(cached);
+  }
+
+  function num(v){
+    var n = parseFloat(String(v==null?'':v).replace(/[,+\s]/g,''));
+    return isNaN(n) ? null : n;
+  }
+  function addQuote(map, ticker, name, close, change, high, low, open){
+    if(!wanted[ticker]) return;
+    var c = num(close);
+    if(c==null || c<=0) return;
+    var ch = num(change) || 0;
+    var pc = c - ch;
+    if(name){
+      stockNames[ticker] = name;
+      zhNames[ticker.replace(/\.(TW|TWO)$/i,'')] = name;
+    }
+    map[ticker] = {
+      price:c,
+      prevClose:pc>0 ? pc : c,
+      change1d:pc>0 ? ch/pc*100 : 0,
+      high:num(high) || c,
+      low:num(low) || c,
+      open:num(open) || c,
+      currency:'TWD'
+    };
+  }
+  function parseTwse(rows){
+    var map = {};
+    (rows||[]).forEach(function(r){
+      addQuote(map, r.Code+'.TW', r.Name, r.ClosingPrice, r.Change, r.HighestPrice, r.LowestPrice, r.OpeningPrice);
+    });
+    return map;
+  }
+  function parseTpex(rows){
+    var map = {};
+    (rows||[]).forEach(function(r){
+      if(Array.isArray(r)) addQuote(map, r[0]+'.TWO', r[1], r[2], r[3], r[5], r[6], r[4]);
+      else addQuote(map, r.SecuritiesCompanyCode+'.TWO', r.CompanyName, r.Close, r.Change, r.High, r.Low, r.Open);
+    });
+    return map;
+  }
+  function get(url, parser){
+    return withTimeout(fetch(url,{cache:'no-store'}), 8000)
+      .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+      .then(parser)
+      .catch(function(){ return {}; });
+  }
+
+  var needTwse = tickers.some(function(t){ return /\.TW$/i.test(t); });
+  var needTpex = tickers.some(function(t){ return /\.TWO$/i.test(t); });
+  var reqs = [];
+  if(needTwse) reqs.push(get('https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL', parseTwse));
+  if(needTpex) reqs.push(get('https://www.tpex.org.tw/web/stock/aftertrading/DAILY_CLOSE_quotes/stk_quote_result.php?l=zh-tw&o=json', function(d){
+    return parseTpex(d&&d.tables&&d.tables[0]&&d.tables[0].data||[]);
+  }));
+  if(!reqs.length) return Promise.resolve({});
+
+  return Promise.all(reqs).then(function(parts){
+    var out = {};
+    parts.forEach(function(m){ Object.keys(m).forEach(function(k){ out[k]=m[k]; }); });
+    if(Object.keys(out).length){
+      Object.keys(out).forEach(function(k){ officialQuoteCache.map[k]=out[k]; });
+      officialQuoteCache.ts = Date.now();
+      store.set('tw_sepa_names', stockNames);
+      store.set('tw_sepa_zh_names', zhNames);
+      store.set('tw_sepa_zh_names_ts', Date.now());
+    }
+    return out;
+  });
+}
+
 function fetchAll(cb){
   var groups=getGroups();
   if(!groups.length){ cb&&cb(); return; }
@@ -1004,12 +1087,19 @@ function fetchAll(cb){
     }, finish);
   }
 
-  _fetchBatchYahoo(tickers)
+  _fetchBatchOfficialTW(tickers)
     .then(function(map){
       tickers.forEach(function(t){ if(map[t]) prices[t]=map[t]; });
       var missing=tickers.filter(function(t){ return !map[t]; });
       if(!missing.length) finish();
-      else fallback(missing);
+      else _fetchBatchYahoo(missing)
+        .then(function(ymap){
+          missing.forEach(function(t){ if(ymap[t]) prices[t]=ymap[t]; });
+          var stillMissing=missing.filter(function(t){ return !ymap[t]; });
+          if(!stillMissing.length) finish();
+          else fallback(stillMissing);
+        })
+        .catch(function(){ fallback(missing); });
     })
     .catch(function(){ fallback(tickers); });
 }
@@ -1940,11 +2030,12 @@ function fullRefresh(){
     });
   }
   ic.className='spinning';lb.textContent='更新中';
+  fetchAll(function(){
+    renderAll();
+    finishPriceRefresh();
+  });
   fetchMarketState(function(){
-    fetchAll(function(){
-      renderAll();
-      finishPriceRefresh();
-    });
+    renderAll();
   });
 }
 
@@ -2205,8 +2296,8 @@ document.getElementById('btn-copy').addEventListener('click', function(){
 document.getElementById('f-date').value=new Date().toISOString().slice(0,10);
 setStopMode('pct');
 renderAll();
-fetchZhNames(function(){ renderAll(); });
 if(lots.length) fullRefresh();
+else fetchZhNames(function(){ renderAll(); });
 // 台股開盤期間每5分鐘刷新
 setInterval(function(){
   var dot=document.getElementById('mkt-dot');
