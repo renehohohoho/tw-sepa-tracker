@@ -658,6 +658,7 @@ var tpPhase = store.get('tw_sepa_tp_phase') || {};
 var expanded = null;
 var loading  = false;
 var vcpLoading = false;
+var pricesFetched = Object.keys(prices).length > 0;
 var officialQuoteCache = {ts:0,map:{}};
 var stopMode = 'pct';
 var tradeLog = store.get('tw_sepa_trade_log') || [];
@@ -932,7 +933,16 @@ function _fetchOneTW_yahoo(ticker){
         fetch('https://corsproxy.io/?'+encodeURIComponent(directUrl), {cache:'no-store'})
           .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
           .then(parse),
-        12000
+        7000
+      );
+    })
+    .catch(function(){
+      return withTimeout(
+        fetch('https://api.allorigins.win/get?url='+encodeURIComponent(directUrl), {cache:'no-store'})
+          .then(function(r){ return r.json(); })
+          .then(function(d){ return JSON.parse(d.contents); })
+          .then(parse),
+        10000
       );
     });
 }
@@ -970,7 +980,9 @@ function _fetchBatchYahoo(tickers){
       8000
     );
   }
-  var proxyUrl = 'https://corsproxy.io/?'+encodeURIComponent('https://query2.finance.yahoo.com/v7/finance/quote?symbols='+syms+'&fields='+fields);
+  var yhBase = 'https://query2.finance.yahoo.com/v7/finance/quote?symbols='+syms+'&fields='+fields;
+  var proxyUrl = 'https://corsproxy.io/?'+encodeURIComponent(yhBase);
+  var aoUrl    = 'https://api.allorigins.win/get?url='+encodeURIComponent(yhBase);
   return tryBase('https://query2.finance.yahoo.com/v7/finance/quote')
     .catch(function(){ return tryBase('https://query1.finance.yahoo.com/v7/finance/quote'); })
     .catch(function(){
@@ -978,7 +990,16 @@ function _fetchBatchYahoo(tickers){
         fetch(proxyUrl, {cache:'no-store'})
           .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
           .then(parseQuote),
-        12000
+        7000
+      );
+    })
+    .catch(function(){
+      return withTimeout(
+        fetch(aoUrl, {cache:'no-store'})
+          .then(function(r){ return r.json(); })
+          .then(function(d){ return JSON.parse(d.contents); })
+          .then(parseQuote),
+        10000
       );
     })
     .catch(function(){ return {}; });
@@ -1074,6 +1095,7 @@ function fetchAll(cb){
   groups.forEach(function(g){ if(!seen[g.ticker]){ seen[g.ticker]=1; tickers.push(g.ticker); } });
 
   function finish(){
+    pricesFetched = true;
     store.set('tw_sepa_names',stockNames);
     store.set('tw_sepa_prices',{ts:Date.now(),map:prices});
     document.getElementById('last-upd').textContent='最後更新 '+new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'});
@@ -1557,6 +1579,7 @@ function renderCard(card, g){
   var tickerAttr=esc(g.ticker);
 
   var bkey='watch',bicon='⏳',blabel='載入報價中…';
+  if(!cur && pricesFetched){ bkey='err'; bicon='⚠️'; blabel='報價失敗，點更新重試'; }
   if(cur){
     var p2=pp||0,s2=sg||0;
     var bearish = marketState.twAbove200 === false;
