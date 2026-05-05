@@ -1087,21 +1087,30 @@ function fetchAll(cb){
     }, finish);
   }
 
+  // Fire Yahoo batch immediately in parallel with official APIs
+  var yahooP = _fetchBatchYahoo(tickers).catch(function(){ return {}; });
+
   _fetchBatchOfficialTW(tickers)
-    .then(function(map){
-      tickers.forEach(function(t){ if(map[t]) prices[t]=map[t]; });
-      var missing=tickers.filter(function(t){ return !map[t]; });
-      if(!missing.length) finish();
-      else _fetchBatchYahoo(missing)
-        .then(function(ymap){
-          missing.forEach(function(t){ if(ymap[t]) prices[t]=ymap[t]; });
-          var stillMissing=missing.filter(function(t){ return !ymap[t]; });
-          if(!stillMissing.length) finish();
-          else fallback(stillMissing);
-        })
-        .catch(function(){ fallback(missing); });
+    .then(function(offMap){
+      tickers.forEach(function(t){ if(offMap[t]) prices[t]=offMap[t]; });
+      var missing=tickers.filter(function(t){ return !prices[t]; });
+      if(!missing.length){ finish(); return; }
+      // Yahoo has been running in parallel — no extra wait if it already settled
+      yahooP.then(function(yhMap){
+        missing.forEach(function(t){ if(yhMap[t]) prices[t]=yhMap[t]; });
+        var still=missing.filter(function(t){ return !prices[t]; });
+        if(!still.length) finish();
+        else fallback(still);
+      });
     })
-    .catch(function(){ fallback(tickers); });
+    .catch(function(){
+      yahooP.then(function(yhMap){
+        tickers.forEach(function(t){ if(yhMap[t]) prices[t]=yhMap[t]; });
+        var missing=tickers.filter(function(t){ return !prices[t]; });
+        if(!missing.length) finish();
+        else fallback(missing);
+      });
+    });
 }
 
 // ══════════════════════════════════════════════════
