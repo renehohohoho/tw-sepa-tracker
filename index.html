@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="台股持倉">
@@ -11,7 +11,7 @@
 <style>
 :root{
   --bg:#070810;--bg2:#0c0d1a;--card:#0f1020;--bdr:#1e2035;--bdr2:#2a2c48;
-  --text:#dde0f5;--muted:#52557a;--dim:#2c2e4a;
+  --text:#dde0f5;--muted:#8a8db3;--faint:#7a7da3;--dim:#2c2e4a;
   --green:#00f08a;--grn2:#00b865;--red:#ff3d5a;--amber:#ffb020;--blue:#4d9fff;--purp:#b07aff;
   --mono:'DM Mono',monospace;--sans:'Outfit',sans-serif;
   --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
@@ -43,7 +43,7 @@ input[type="number"]{appearance:textfield}
   position:sticky;top:0;z-index:100}
 .hdr-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
 .hdr-title{font-size:11px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--green)}
-.hdr-sub{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
+.hdr-sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px}
 .hdr-btns{display:flex;gap:8px}
 .btn-icon{background:var(--card);border:1px solid var(--bdr2);color:var(--muted);
   border-radius:20px;padding:0 14px;font-family:var(--mono);font-size:11px;
@@ -55,9 +55,9 @@ input[type="number"]{appearance:textfield}
 .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 @media(max-width:480px){.stats-row{grid-template-columns:repeat(2,1fr)}}
 .stat-box{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:10px 11px;cursor:default}
-.stat-label{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px}
+.stat-label{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px}
 .stat-val{font-family:var(--mono);font-size:15px;font-weight:500}
-.last-upd{font-family:var(--mono);font-size:9px;color:var(--muted);text-align:right;margin-top:6px}
+.last-upd{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;margin-top:6px}
 
 /* ── BOTTOM NAV ─────────────────────────────────── */
 .bottom-nav{position:fixed;bottom:0;left:0;right:0;z-index:100;
@@ -68,7 +68,7 @@ input[type="number"]{appearance:textfield}
   display:flex}
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;
   cursor:pointer;padding:6px 0;user-select:none;-webkit-user-select:none;
-  color:var(--muted);font-family:var(--mono);font-size:9px;letter-spacing:.05em;
+  color:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:.05em;
   text-transform:uppercase;border:none;background:none;transition:color .15s}
 .nav-btn:active{transform:scale(.92)}
 .nav-btn.active{color:var(--green)}
@@ -78,7 +78,7 @@ input[type="number"]{appearance:textfield}
 .page{display:none}
 .page.active{display:block}
 .main{max-width:860px;margin:0 auto;padding:18px 14px 20px}
-.sec-lbl{font-size:10px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;
+.sec-lbl{font-size:11px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;
   letter-spacing:.18em;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 .sec-lbl::after{content:'';flex:1;height:1px;background:var(--bdr)}
 
@@ -87,15 +87,15 @@ input[type="number"]{appearance:textfield}
   background:var(--card);border:1px solid var(--bdr);border-radius:10px;
   margin-bottom:20px;font-family:var(--mono);font-size:11px;color:var(--muted)}
 .mkt-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex-shrink:0}
-.mkt-dot.open{background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s ease-in-out infinite}
-.mkt-dot.pre{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+.mkt-dot.open{background:var(--green);animation:pulse 2s ease-in-out infinite}
+.mkt-dot.pre{background:var(--amber)}
 .mkt-dot.aft{background:var(--blue)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 
 /* ── ADD FORM ────────────────────────────────────── */
 .add-section{background:var(--card);border:1px solid var(--bdr);border-radius:14px;padding:16px;margin-bottom:24px}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:12px}
-.field label{display:block;font-family:var(--mono);font-size:9px;color:var(--muted);
+.field label{display:block;font-family:var(--mono);font-size:11px;color:var(--muted);
   text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
 .field input,.field select{width:100%;background:var(--bg2);border:1px solid var(--bdr);color:var(--text);
   border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:13px;
@@ -110,7 +110,7 @@ input[type="number"]{appearance:textfield}
   font-family:var(--mono);font-size:11px;transition:background .15s,color .15s}
 .stop-tab.active{background:var(--green);color:#000;font-weight:600}
 .stop-input-wrap{flex:1}
-.stop-hint{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:4px;min-height:14px}
+.stop-hint{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:4px;min-height:14px}
 .btn-primary{width:100%;background:var(--green);color:#000;border:none;border-radius:10px;
   padding:13px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;
   transition:opacity .15s}
@@ -126,7 +126,7 @@ input[type="number"]{appearance:textfield}
 .pos-main{display:flex;align-items:flex-start;gap:10px;padding:14px 14px 0;cursor:pointer;user-select:none}
 .pos-ticker{font-size:17px;font-weight:800;font-family:var(--mono);letter-spacing:-.5px}
 .pos-name{font-size:12px;color:var(--text);font-family:var(--sans);margin-top:2px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
-.pos-lots{font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px}
+.pos-lots{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px}
 .pos-middle{flex:1;min-width:0}
 .pos-pnl-row{display:flex;align-items:baseline;gap:6px;margin-bottom:4px}
 .pos-pnl-twd{font-size:16px;font-weight:600;font-family:var(--mono)}
@@ -134,12 +134,12 @@ input[type="number"]{appearance:textfield}
 .pos-bar-track{height:3px;background:var(--dim);border-radius:3px;margin-bottom:6px;overflow:hidden}
 .pos-bar-fill{height:3px;border-radius:3px;transition:width .5s}
 .pos-meta{display:flex;gap:12px;flex-wrap:wrap}
-.pos-meta-item{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.pos-meta-item{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .pos-meta-item span{color:var(--text)}
 .pos-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
 .pos-chg{font-size:11px;font-family:var(--mono)}
 .pos-current{font-size:16px;font-weight:700;font-family:var(--mono)}
-.pos-entry-small{font-size:10px;font-family:var(--mono);color:var(--muted)}
+.pos-entry-small{font-size:11px;font-family:var(--mono);color:var(--muted)}
 
 /* ── SIGNAL BADGE ────────────────────────────────── */
 .sig-badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;margin-top:4px;font-family:var(--sans)}
@@ -152,35 +152,35 @@ input[type="number"]{appearance:textfield}
 
 /* ── VCP STRIP ───────────────────────────────────── */
 .vcp-strip{display:flex;align-items:center;gap:6px;padding:8px 14px;
-  border-top:1px solid var(--bdr);font-family:var(--mono);font-size:10px;
+  border-top:1px solid var(--bdr);font-family:var(--mono);font-size:11px;
   flex-wrap:wrap;gap:6px}
-.vcp-lbl{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.1em}
+.vcp-lbl{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em}
 .vcp-stages{display:flex;align-items:center;gap:3px}
 .vcp-dot{width:7px;height:7px;border-radius:50%}
 .vcp-dot.done{background:var(--green)}
 .vcp-dot.curr{background:var(--amber)}
 .vcp-dot.pend{background:var(--dim);border:1px solid var(--muted)}
-.vcp-stxt{font-size:9px}
+.vcp-stxt{font-size:11px}
 .vcp-stxt.done{color:var(--green)}
 .vcp-stxt.curr{color:var(--amber)}
 .vcp-stxt.pend{color:var(--muted)}
-.vcp-arr{color:var(--dim);font-size:10px}
-.vcp-buy{color:var(--green);font-size:10px;font-weight:700;
+.vcp-arr{color:var(--faint);font-size:11px}
+.vcp-buy{color:var(--green);font-size:11px;font-weight:700;
   background:rgba(0,240,138,.12);border:1px solid rgba(0,240,138,.3);
   border-radius:5px;padding:2px 7px}
-.vcp-wait{color:var(--muted);font-size:10px}
-.vcp-loading{color:var(--dim);font-size:10px}
-.vcp-zone{color:var(--amber);font-family:var(--mono);font-size:10px;
+.vcp-wait{color:var(--muted);font-size:11px}
+.vcp-loading{color:var(--faint);font-size:11px}
+.vcp-zone{color:var(--amber);font-family:var(--mono);font-size:11px;
   background:rgba(255,176,32,.10);border:1px solid rgba(255,176,32,.25);
   border-radius:5px;padding:2px 7px}
 
 /* ── EXPANDED DETAIL ─────────────────────────────── */
 .pos-detail{padding:0 14px 14px}
 .lots-section{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;margin-bottom:10px}
-.lots-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.lots-title{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
 .lot-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--bdr)}
 .lot-row:last-child{border-bottom:none}
-.lot-date{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:75px}
+.lot-date{font-family:var(--mono);font-size:11px;color:var(--muted);min-width:75px}
 .lot-val{font-family:var(--mono);font-size:11px;flex:1}
 .lot-pnl{font-family:var(--mono);font-size:11px;text-align:right;min-width:60px}
 .lot-del{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 5px;font-size:12px}
@@ -190,15 +190,15 @@ input[type="number"]{appearance:textfield}
 .detail-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
 @media(max-width:430px){.detail-grid{grid-template-columns:repeat(2,1fr)}}
 .dc{background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px}
-.dc-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
+.dc-lbl{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
 .dc-val{font-family:var(--mono);font-size:13px;font-weight:500}
 
 /* ── ANALYSIS BOX ────────────────────────────────── */
 .analysis-box{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.analysis-title{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
+.analysis-title{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-bottom:10px}
 .analysis-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
 .analysis-item{background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px}
-.analysis-item-label{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.analysis-item-label{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
 .analysis-item-val{font-family:var(--mono);font-size:14px;font-weight:500}
 .rationale{font-size:12px;color:#aaa;line-height:1.6;border-top:1px solid var(--bdr);padding-top:10px;margin-top:6px}
 
@@ -213,20 +213,20 @@ input[type="number"]{appearance:textfield}
 .vcp-buy-badge-lg{background:rgba(0,240,138,.15);color:var(--green);border:1px solid rgba(0,240,138,.4);
   border-radius:8px;padding:6px 12px;font-family:var(--mono);font-size:11px;font-weight:700;flex-shrink:0}
 .vcp-panel{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.vcp-panel-title{font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em}
+.vcp-panel-title{font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em}
 .vcp-dgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
 .vcp-dc{background:var(--card);border:1px solid var(--bdr);border-radius:7px;padding:7px 9px}
-.vcp-dc-lbl{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
+.vcp-dc-lbl{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
 .vcp-dc-val{font-family:var(--mono);font-size:12px;font-weight:600}
 .vcp-cbar{display:flex;align-items:center;gap:3px;margin-bottom:8px;overflow:hidden}
 .vcp-cseg{height:6px;border-radius:3px;min-width:4px;transition:width .4s}
-.vcp-clbl{font-family:var(--mono);font-size:10px;color:var(--muted)}
+.vcp-clbl{font-family:var(--mono);font-size:11px;color:var(--muted)}
 .vcp-rat{font-family:var(--mono);font-size:11px;color:#888;line-height:1.6;
   border-top:1px solid var(--bdr);padding-top:8px;white-space:pre-line}
 
 /* ── TAKE PROFIT PLAN ────────────────────────────── */
 .tp-plan{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px;margin-bottom:10px}
-.tp-plan-title{font-family:var(--mono);font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
+.tp-plan-title{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
 .tp-rows{display:flex;flex-direction:column;gap:4px;margin-bottom:8px}
 .tp-row{display:flex;align-items:center;gap:6px;padding:7px 9px;
   background:var(--card);border:1px solid var(--bdr);border-radius:7px;
@@ -237,8 +237,8 @@ input[type="number"]{appearance:textfield}
 .tp-lbl{font-size:11px;flex:1}
 .tp-price{font-family:var(--mono);font-size:11px;min-width:80px;text-align:right}
 .tp-pnl{font-family:var(--mono);font-size:11px;min-width:70px;text-align:right;color:var(--green)}
-.tp-rr{font-family:var(--mono);font-size:10px;min-width:32px;text-align:right}
-.tp-sub{font-size:10px;color:var(--muted);padding:1px 9px 5px 37px;font-family:var(--mono)}
+.tp-rr{font-family:var(--mono);font-size:11px;min-width:32px;text-align:right}
+.tp-sub{font-size:11px;color:var(--muted);padding:1px 9px 5px 37px;font-family:var(--mono)}
 .tp-next{font-family:var(--mono);font-size:11px;color:var(--amber);padding:6px 0;border-top:1px solid var(--bdr);margin-top:4px}
 .tp-stopmove{font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 0;line-height:1.8}
 .tp-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
@@ -253,8 +253,8 @@ input[type="number"]{appearance:textfield}
 .done-btn{border-color:var(--bdr);color:var(--muted);background:transparent;opacity:.4;cursor:default}
 .next-btn{box-shadow:0 0 0 1px currentColor}
 .tp-act-badge{font-size:14px}
-.tp-act-lbl{font-size:9px;color:var(--muted);text-align:center;line-height:1.5}
-.tp-progress{display:flex;align-items:center;gap:5px;margin-top:6px;font-family:var(--mono);font-size:10px}
+.tp-act-lbl{font-size:11px;color:var(--muted);text-align:center;line-height:1.5}
+.tp-progress{display:flex;align-items:center;gap:5px;margin-top:6px;font-family:var(--mono);font-size:11px}
 .tp-progress-dot{width:8px;height:8px;border-radius:50%}
 .tp-done{background:var(--green)}
 .tp-pending{background:var(--dim);border:1px solid var(--muted)}
@@ -291,7 +291,7 @@ input[type="number"]{appearance:textfield}
   padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto}
 .modal-title{font-size:15px;font-weight:700;color:var(--green);margin-bottom:4px}
 .modal-sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:12px;line-height:1.6}
-.modal-json{font-family:var(--mono);font-size:10px;color:#aaa;
+.modal-json{font-family:var(--mono);font-size:11px;color:#aaa;
   background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
   padding:10px;max-height:200px;overflow-y:auto;white-space:pre;margin-bottom:12px}
 .modal-btns{display:flex;gap:8px}
@@ -302,7 +302,7 @@ input[type="number"]{appearance:textfield}
 
 /* ── SETTINGS ────────────────────────────────────── */
 .settings-card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;padding:16px;margin-bottom:14px}
-.settings-header{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.15em;margin-bottom:12px}
+.settings-header{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.15em;margin-bottom:12px}
 .settings-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--bdr)}
 .settings-row:last-child{border-bottom:none}
 .settings-row-label{flex:1}
@@ -314,11 +314,11 @@ input[type="number"]{appearance:textfield}
 .settings-input-wide{width:180px;text-align:left}
 .settings-save-btn{width:100%;background:var(--green);color:#000;border:none;border-radius:10px;
   padding:12px;font-family:var(--sans);font-size:14px;font-weight:700;cursor:pointer;margin-bottom:4px}
-.version-tag{font-family:var(--mono);font-size:10px;color:var(--dim);text-align:center;padding-top:8px}
+.version-tag{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;padding-top:8px}
 
 /* ── PHASE BADGE (collapsed card) ───────────────── */
 .tp-phase-tag{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;
-  border-radius:8px;font-family:var(--mono);font-size:9px;font-weight:600;
+  border-radius:8px;font-family:var(--mono);font-size:11px;font-weight:600;
   background:rgba(0,184,101,.15);border:1px solid rgba(0,184,101,.3);
   color:var(--grn2);margin-top:3px;letter-spacing:.02em;white-space:nowrap}
 
@@ -332,12 +332,22 @@ input[type="number"]{appearance:textfield}
   cursor:pointer;border:none;background:none;transition:background .15s,color .15s}
 .ct-tab.active.sell{background:var(--amber);color:#000;font-weight:700}
 .ct-tab.active.buy{background:var(--blue);color:#000;font-weight:700}
-.ct-field-lbl{font-family:var(--mono);font-size:10px;color:var(--muted);
+.ct-field-lbl{font-family:var(--mono);font-size:11px;color:var(--muted);
   margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em}
 .ct-input{width:100%;background:var(--card);border:1px solid var(--bdr2);border-radius:10px;
   color:var(--text);padding:12px 14px;font-family:var(--mono);font-size:16px;
   outline:none;-webkit-appearance:none;appearance:none;min-height:48px;caret-color:var(--green)}
 .ct-input:focus{border-color:var(--green)}
+/* ── A11Y & BROWSER SURFACES ───────────────────── */
+::selection{background:rgba(0,240,138,.28);color:var(--text)}
+html{scrollbar-color:var(--bdr2) var(--bg)}
+.stat-val,.pos-pnl-usd,.pos-pnl-pct,.pos-current,.dc-val,.vcp-dc-val,.analysis-item-val,.lot-row,.tp-row{font-variant-numeric:tabular-nums}
+button:focus-visible,[role="button"]:focus-visible,.pos-main:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){
+  .mkt-dot.open,.vcp-buy,.shimmer{animation:none}
+  .spinning{animation-duration:2s}
+  .toast,.pos-bar-fill{transition:none}
+}
 </style>
 <script>
 (function(){
@@ -360,7 +370,7 @@ input[type="number"]{appearance:textfield}
       <div class="hdr-sub" id="hdr-sub">Minervini 策略 · 台幣計算 · v5.1</div>
     </div>
     <div class="hdr-btns">
-      <button type="button" class="btn-icon" id="btn-export">📋</button>
+      <button type="button" class="btn-icon" id="btn-export" aria-label="匯出持倉 JSON" title="匯出持倉 JSON">📋</button>
       <button type="button" class="btn-icon" id="btn-hardreload" style="font-size:13px">🔄 重載</button>
       <button type="button" class="btn-icon" id="btn-refresh"><span id="ri">↻</span> <span id="rl">更新</span></button>
     </div>
@@ -383,7 +393,7 @@ input[type="number"]{appearance:textfield}
   <div class="mkt-bar">
     <div class="mkt-dot" id="mkt-dot"></div>
     <span id="mkt-st" style="flex:1">—</span>
-    <span id="mkt-tm" style="color:var(--dim)"></span>
+    <span id="mkt-tm" style="color:var(--faint)"></span>
   </div>
 
   <!-- ADD FORM -->
@@ -478,7 +488,7 @@ input[type="number"]{appearance:textfield}
         <div class="settings-row-title">FinMind Token</div>
         <div class="settings-row-desc">選填 · 填了請求上限較高</div>
       </div>
-      <input class="settings-input" style="width:180px;text-align:left;font-size:10px"
+      <input class="settings-input" style="width:180px;text-align:left;font-size:11px"
         id="cfg-token" type="text" autocomplete="off" autocorrect="off"
         autocapitalize="none" spellcheck="false" placeholder="eyJ0eXAiOi...">
     </div>
@@ -532,15 +542,15 @@ input[type="number"]{appearance:textfield}
 
 <!-- TP EXECUTE MODAL -->
 <div class="modal-overlay" id="tp-modal">
-  <div class="modal" style="gap:16px">
+  <div class="modal" role="dialog" aria-modal="true" style="gap:16px">
     <div style="display:flex;align-items:center;justify-content:space-between">
       <div class="modal-title" id="tp-modal-title">執行止盈</div>
-      <div id="tp-modal-phase-badge" style="font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:20px;background:rgba(255,176,32,.15);color:var(--amber)"></div>
+      <div id="tp-modal-phase-badge" style="font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:20px;background:rgba(255,176,32,.15);color:var(--amber)"></div>
     </div>
     <div id="tp-modal-info" style="background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.9"></div>
     <div style="display:flex;flex-direction:column;gap:10px">
       <div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出張數</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出張數</div>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="number" id="tp-inp-lots" inputmode="numeric" min="1"
             style="flex:1;background:var(--card);border:1px solid var(--bdr2);border-radius:10px;
@@ -554,7 +564,7 @@ input[type="number"]{appearance:textfield}
         </div>
       </div>
       <div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出價格 (NT$)</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em">賣出價格 (NT$)</div>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="number" id="tp-inp-price" inputmode="decimal" step="0.1" min="0.1"
             style="flex:1;background:var(--card);border:1px solid var(--bdr2);border-radius:10px;
@@ -582,7 +592,7 @@ input[type="number"]{appearance:textfield}
 
 <!-- CUSTOM TRADE MODAL -->
 <div class="modal-overlay" id="ct-modal">
-  <div class="modal" style="gap:14px">
+  <div class="modal" role="dialog" aria-modal="true" style="gap:14px">
     <div style="display:flex;align-items:center;justify-content:space-between">
       <div class="modal-title">📝 記錄自訂交易</div>
       <div id="ct-ticker-lbl" style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green)"></div>
@@ -627,7 +637,7 @@ input[type="number"]{appearance:textfield}
 
 <!-- EXPORT MODAL -->
 <div class="modal-overlay" id="modal">
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true">
     <div>
       <div class="modal-title">📋 匯出持倉 JSON</div>
       <div class="modal-sub">AI可讀格式 · 複製後可貼給 AI 分析台股持倉</div>
@@ -1186,7 +1196,7 @@ function buildVcpPanel(g){
       }
       if(suggestions.length){
         html+='<div style="margin-top:8px;border-top:1px solid var(--bdr);padding-top:8px">';
-        html+='<div style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">📐 移動停損建議</div>';
+        html+='<div style="font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">📐 移動停損建議</div>';
         suggestions.forEach(function(s){
           html+='<div style="font-family:var(--mono);font-size:11px;color:'+s.col+';margin-bottom:4px">'+s.icon+' '+s.txt+'</div>';
         });
@@ -1307,7 +1317,7 @@ function buildTPPlan(g, cur){
     for(var pi=1;pi<=3;pi++){
       html+='<span class="tp-progress-dot '+(phase>=pi?'tp-done':'tp-pending')+'"></span>';
       html+='<span style="color:'+(phase>=pi?'var(--green)':'var(--muted)')+'">'+['T1','T2','T3'][pi-1]+'</span>';
-      if(pi<3) html+='<span style="color:var(--dim)">›</span>';
+      if(pi<3) html+='<span style="color:var(--faint)">›</span>';
     }
     html+='<span style="margin-left:4px;color:var(--text)">'+phaseNames[phase]+'</span>';
     html+='</div>';
@@ -1356,7 +1366,7 @@ function buildLadderBar(g, cur){
       +seg(t3,hi,     'rgba(255,255,255,0.06)');
 
   var curLbl=(cp!==null&&cur)
-    ?'<div style="position:absolute;left:'+cp+'%;transform:translateX(-50%);font-family:var(--mono);font-size:8px;font-weight:700;color:'+cc+';white-space:nowrap">NT$'+f2(cur,1)+'</div>'
+    ?'<div style="position:absolute;left:'+cp+'%;transform:translateX(-50%);font-family:var(--mono);font-size:10px;font-weight:700;color:'+cc+';white-space:nowrap">NT$'+f2(cur,1)+'</div>'
     :'';
 
   var marker=(cp!==null)
@@ -1369,7 +1379,7 @@ function buildLadderBar(g, cur){
     var p=parseFloat(pct);
     if(placed.some(function(u){return Math.abs(u-p)<8;})) return '';
     placed.push(p);
-    return '<div style="position:absolute;left:'+pct+'%;transform:translateX(-50%);font-family:var(--mono);font-size:8px;color:'+color+';white-space:nowrap">'+text+'</div>';
+    return '<div style="position:absolute;left:'+pct+'%;transform:translateX(-50%);font-family:var(--mono);font-size:10px;color:'+color+';white-space:nowrap">'+text+'</div>';
   }
   var labels=lbl(xp(t1),'T1','var(--amber)')
     +lbl(xp(t2),'T2','var(--grn2)')
@@ -1418,16 +1428,16 @@ function renderStats(){
     var twTxt=marketState.twAbove200===null?'—':marketState.twAbove200?'✓ 多頭':'✗ 空頭';
     var twCol=marketState.twAbove200===null?'var(--muted)':marketState.twAbove200?'var(--green)':'var(--red)';
     riskEl.innerHTML=
-      '<span style="font-family:var(--mono);font-size:10px;color:var(--muted)">最大回撤 </span>'
+      '<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">最大回撤 </span>'
       +'<span style="font-family:var(--mono);font-size:12px;color:'+mlCol+'">'+f2(mlPct,1)+'%</span>'
-      +'<span style="color:var(--dim);margin:0 6px">·</span>'
-      +'<span style="font-family:var(--mono);font-size:10px;color:var(--muted)">最大持倉 </span>'
+      +'<span style="color:var(--faint);margin:0 6px">·</span>'
+      +'<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">最大持倉 </span>'
       +'<span style="font-family:var(--mono);font-size:12px;color:'+mxCol+'">'+f2(maxPosPct,0)+'%</span>'
-      +(maxPosPct>(cfg.maxPosPct||25)?'<span style="font-size:10px;color:var(--amber)"> ⚠️</span>':'')
-      +'<span style="color:var(--dim);margin:0 6px">·</span>'
-      +'<span style="font-family:var(--mono);font-size:10px;color:var(--muted)">加權指數 </span>'
+      +(maxPosPct>(cfg.maxPosPct||25)?'<span style="font-size:11px;color:var(--amber)"> ⚠️</span>':'')
+      +'<span style="color:var(--faint);margin:0 6px">·</span>'
+      +'<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">加權指數 </span>'
       +'<span style="font-family:var(--mono);font-size:12px;color:'+twCol+'">'+twTxt+'</span>'
-      +(marketState.twAbove200===false?'<span style="font-size:10px;color:var(--red)"> 加碼訊號已停用</span>':'');
+      +(marketState.twAbove200===false?'<span style="font-size:11px;color:var(--red)"> 加碼訊號已停用</span>':'');
     riskEl.style.display='flex';
   } else if(riskEl){
     riskEl.style.display='none';
@@ -1499,7 +1509,7 @@ function renderCard(card, g){
         +'<span class="lot-val">'+(lot.lots||0)+'張 @NT$'+f2(lot.entry,1)+'</span>'
         +'<span class="lot-val" style="color:var(--red)">停NT$'+f2(lot.stop,1)+'</span>'
         +'<span class="lot-pnl" style="color:'+(lotPnl!==null?pcol(lotPnl):'var(--muted)')+'">'+
-          (lotPnl!==null?twd(lotPnl)+'<br><span style="font-size:9px">'+ppct(lotPnlPct||0)+'</span>':'—')+'</span>'
+          (lotPnl!==null?twd(lotPnl)+'<br><span style="font-size:11px">'+ppct(lotPnlPct||0)+'</span>':'—')+'</span>'
         +'<button type="button" class="lot-del" data-lot-id="'+esc(lot.id)+'" data-ticker="'+tickerAttr+'">✕</button>'
         +'</div>';
     });
@@ -1525,10 +1535,10 @@ function renderCard(card, g){
             +'<span class="lot-date">'+esc(t.date)+'</span>'
             +'<span class="lot-val" style="color:'+lblCol+'">'+esc(phaseLabel)+' '+esc(t.lots)+' 張</span>'
             +'<span class="lot-val">@NT$'+f2(t.price,1)+'</span>'
-            +'<span class="lot-pnl" style="color:'+pnlCol+'">'+twd(t.pnl)+'<br><span style="font-size:9px">'+ppct(t.pct)+'</span></span>'
+            +'<span class="lot-pnl" style="color:'+pnlCol+'">'+twd(t.pnl)+'<br><span style="font-size:11px">'+ppct(t.pct)+'</span></span>'
             +'<button type="button" class="lot-del" data-trade-id="'+esc(t.id)+'" data-ticker="'+tickerAttr+'">✕</button>'
             +'</div>'
-            +(t.notes?'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 10px 5px;border-left:2px solid var(--bdr)">'+esc(t.notes)+'</div>':'');
+            +(t.notes?'<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:2px 10px 5px;border-left:2px solid var(--bdr)">'+esc(t.notes)+'</div>':'');
         });
         lotsHtml+='</div>';
       }
@@ -1543,7 +1553,7 @@ function renderCard(card, g){
             +'<span class="lot-pnl" style="color:var(--muted)">—</span>'
             +'<button type="button" class="lot-del" data-trade-id="'+esc(t.id)+'" data-ticker="'+tickerAttr+'">✕</button>'
             +'</div>'
-            +(t.notes?'<div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 10px 5px;border-left:2px solid var(--bdr)">'+esc(t.notes)+'</div>':'');
+            +(t.notes?'<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:2px 10px 5px;border-left:2px solid var(--bdr)">'+esc(t.notes)+'</div>':'');
         });
         lotsHtml+='</div>';
       }
@@ -1571,12 +1581,12 @@ function renderCard(card, g){
         +'<div class="analysis-item-val" style="color:'+(a.rangePos>60?'var(--green)':a.rangePos<30?'var(--red)':'var(--amber)')+'">'+a.rangePos+'%</div></div>'
         +'</div>'
         +'<div style="margin:8px 0 10px">'
-        +'<div style="font-size:9px;font-family:var(--mono);color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.07em">今日區間位置</div>'
+        +'<div style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.07em">今日區間位置</div>'
         +'<div style="position:relative;height:6px;background:var(--bg2);border-radius:6px">'
         +'<div style="position:absolute;left:0;top:0;height:6px;width:'+a.rangePos+'%;background:linear-gradient(90deg,var(--blue),var(--green));border-radius:6px;transition:width .5s"></div>'
         +'<div style="position:absolute;top:-4px;left:'+a.rangePos+'%;transform:translateX(-50%);width:14px;height:14px;background:var(--green);border-radius:50%;border:2px solid var(--card)"></div>'
         +'</div>'
-        +'<div style="display:flex;justify-content:space-between;margin-top:6px;font-family:var(--mono);font-size:9px;color:var(--muted)">'
+        +'<div style="display:flex;justify-content:space-between;margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--muted)">'
         +'<span>低 NT$'+f2(pd.low,1)+'</span><span>現 NT$'+f2(cur,1)+'</span><span>高 NT$'+f2(pd.high,1)+'</span>'
         +'</div></div>'
         +'<div class="rationale">'+a.rationale+'</div>'
@@ -2191,6 +2201,10 @@ document.getElementById('btn-export').addEventListener('click', function(){
 
   document.getElementById('modal-json').textContent = JSON.stringify(exportData, null, 2);
   document.getElementById('modal').classList.add('show');
+});
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape') return;
+  document.querySelectorAll('.modal-overlay.show').forEach(function(o){ o.classList.remove('show'); });
 });
 document.getElementById('btn-mclose').addEventListener('click', function(){ document.getElementById('modal').classList.remove('show'); });
 document.getElementById('modal').addEventListener('click', function(e){ if(e.target===this) this.classList.remove('show'); });
